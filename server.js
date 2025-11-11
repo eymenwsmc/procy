@@ -214,19 +214,4 @@ app.use((err, req, res, next) => {
 });
 
 // ÖNCE (sadece localhost):
-app.listen(PORT, () => {
-    console.log(`...`);
-});
-
-// SONRA (tüm network):
-app.listen(PORT, '0.0.0.0', () => {
-    console.log(`
-╔════════════════════════════════════════════╗
-║  Turkcealtyazi Subtitle Backend           ║
-║  Port: ${PORT}                            ║
-║  Local: http://localhost:${PORT}          ║
-║  Network: http://192.168.1.16:${PORT}     ║
-║  Status: Running ✓                         ║
-╚════════════════════════════════════════════╝
-    `);
-});
+module.exports = app;
