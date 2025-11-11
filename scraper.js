@@ -1,9 +1,29 @@
 const axios = require('axios');
 const cheerio = require('cheerio');
 
+// Configure axios defaults
+axios.defaults.withCredentials = false;
+axios.defaults.maxRedirects = 5;
+axios.defaults.validateStatus = (status) => status >= 200 && status < 300;
+
+// Multiple realistic user agents for rotation
+const userAgents = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15'
+];
+
+// Get random user agent
+const getRandomUserAgent = () => {
+    return userAgents[Math.floor(Math.random() * userAgents.length)];
+};
+
 // Realistic browser headers to avoid 403
 const getBrowserHeaders = (referer = 'https://turkcealtyazi.org/') => ({
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'User-Agent': getRandomUserAgent(),
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
     'Accept-Language': 'tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7',
     'Accept-Encoding': 'gzip, deflate, br',
@@ -13,21 +33,43 @@ const getBrowserHeaders = (referer = 'https://turkcealtyazi.org/') => ({
     'Sec-Fetch-Dest': 'document',
     'Sec-Fetch-Mode': 'navigate',
     'Sec-Fetch-Site': 'same-origin',
+    'Sec-Ch-Ua': '"Not_A Brand";v="8", "Chromium";v="120"',
+    'Sec-Ch-Ua-Mobile': '?0',
+    'Sec-Ch-Ua-Platform': '"Windows"',
     'Cache-Control': 'max-age=0'
 });
 
+// Random delay to mimic human behavior
+const randomDelay = (min = 500, max = 1500) => {
+    const delay = Math.floor(Math.random() * (max - min + 1)) + min;
+    return new Promise(resolve => setTimeout(resolve, delay));
+};
+
 // Retry with exponential backoff
-async function retryRequest(requestFn, maxRetries = 3, initialDelay = 1000) {
+async function retryRequest(requestFn, maxRetries = 5, initialDelay = 2000) {
     for (let i = 0; i < maxRetries; i++) {
         try {
+            // Random delay before each request (except first)
+            if (i > 0) {
+                await randomDelay(1000, 3000);
+            }
             return await requestFn();
         } catch (error) {
             const isLastAttempt = i === maxRetries - 1;
             const is403 = error.response && error.response.status === 403;
+            const is429 = error.response && error.response.status === 429;
             
-            if (is403 && !isLastAttempt) {
+            if ((is403 || is429) && !isLastAttempt) {
                 const delay = initialDelay * Math.pow(2, i);
-                console.log(`[Scraper] 403 detected, retrying in ${delay}ms... (attempt ${i + 1}/${maxRetries})`);
+                console.log(`[Scraper] ${error.response.status} detected, retrying in ${delay}ms... (attempt ${i + 1}/${maxRetries})`);
+                await new Promise(resolve => setTimeout(resolve, delay));
+                continue;
+            }
+            
+            if (!isLastAttempt) {
+                // Retry other errors too (network issues, etc.)
+                const delay = initialDelay * Math.pow(1.5, i);
+                console.log(`[Scraper] Error: ${error.message}, retrying in ${delay}ms... (attempt ${i + 1}/${maxRetries})`);
                 await new Promise(resolve => setTimeout(resolve, delay));
                 continue;
             }
@@ -49,7 +91,7 @@ async function findMainPage(imdbId) {
         const response = await retryRequest(() => 
             axios.get(searchUrl, {
                 headers: getBrowserHeaders(),
-                timeout: 15000,
+                timeout: 30000,
                 maxRedirects: 5
             })
         );
@@ -79,7 +121,7 @@ async function extractSubtitleIds(subtitlePageUrl) {
         const response = await retryRequest(() =>
             axios.get(subtitlePageUrl, {
                 headers: getBrowserHeaders(subtitlePageUrl),
-                timeout: 15000,
+                timeout: 30000,
                 maxRedirects: 5
             })
         );
@@ -127,7 +169,7 @@ async function searchSubtitles(imdbId, type, season, episode) {
         const response = await retryRequest(() =>
             axios.get(mainPageUrl, {
                 headers: getBrowserHeaders(mainPageUrl),
-                timeout: 15000,
+                timeout: 30000,
                 maxRedirects: 5
             })
         );
@@ -215,19 +257,21 @@ async function downloadSubtitle(idid, altid) {
         console.log(`[Scraper] Downloading: ${idid}-${altid}`);
         
         // Use POST method (working method from reference code)
-        const response = await axios({
-            url: 'https://turkcealtyazi.org/ind',
-            method: 'POST',
-            headers: {
-                ...getBrowserHeaders('https://turkcealtyazi.org/'),
-                'Content-Type': 'application/x-www-form-urlencoded',
-                'Origin': 'https://turkcealtyazi.org'
-            },
-            data: `idid=${idid}&altid=${altid}`,
-            responseType: 'arraybuffer',
-            timeout: 20000,
-            maxRedirects: 5
-        });
+        const response = await retryRequest(() =>
+            axios({
+                url: 'https://turkcealtyazi.org/ind',
+                method: 'POST',
+                headers: {
+                    ...getBrowserHeaders('https://turkcealtyazi.org/'),
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'Origin': 'https://turkcealtyazi.org'
+                },
+                data: `idid=${idid}&altid=${altid}`,
+                responseType: 'arraybuffer',
+                timeout: 40000,
+                maxRedirects: 5
+            })
+        );
         
         console.log(`[Scraper] Download successful, size: ${response.data.length} bytes`);
         console.log(`[Scraper] Content-Type: ${response.headers['content-type']}`);
