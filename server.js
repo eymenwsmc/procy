@@ -6,7 +6,7 @@ const NodeCache = require('node-cache');
 const { searchSubtitles, downloadSubtitle } = require('./scraper');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 80;
 
 // Enable CORS
 app.use(cors());
