@@ -1,6 +1,41 @@
 const axios = require('axios');
 const cheerio = require('cheerio');
 
+// Realistic browser headers to avoid 403
+const getBrowserHeaders = (referer = 'https://turkcealtyazi.org/') => ({
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
+    'Accept-Language': 'tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Referer': referer,
+    'Connection': 'keep-alive',
+    'Upgrade-Insecure-Requests': '1',
+    'Sec-Fetch-Dest': 'document',
+    'Sec-Fetch-Mode': 'navigate',
+    'Sec-Fetch-Site': 'same-origin',
+    'Cache-Control': 'max-age=0'
+});
+
+// Retry with exponential backoff
+async function retryRequest(requestFn, maxRetries = 3, initialDelay = 1000) {
+    for (let i = 0; i < maxRetries; i++) {
+        try {
+            return await requestFn();
+        } catch (error) {
+            const isLastAttempt = i === maxRetries - 1;
+            const is403 = error.response && error.response.status === 403;
+            
+            if (is403 && !isLastAttempt) {
+                const delay = initialDelay * Math.pow(2, i);
+                console.log(`[Scraper] 403 detected, retrying in ${delay}ms... (attempt ${i + 1}/${maxRetries})`);
+                await new Promise(resolve => setTimeout(resolve, delay));
+                continue;
+            }
+            throw error;
+        }
+    }
+}
+
 /**
  * Step 1: Find main page URL for movie/series
  */
@@ -11,12 +46,13 @@ async function findMainPage(imdbId) {
         
         console.log(`[Scraper] Finding main page: ${searchUrl}`);
         
-        const response = await axios.get(searchUrl, {
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/97.0.4692.71 Safari/537.36'
-            },
-            timeout: 10000
-        });
+        const response = await retryRequest(() => 
+            axios.get(searchUrl, {
+                headers: getBrowserHeaders(),
+                timeout: 15000,
+                maxRedirects: 5
+            })
+        );
         
         // Response is JSON array: [{url: "/mov/123/title.html", ...}]
         if (response.data && Array.isArray(response.data) && response.data.length > 0) {
@@ -40,12 +76,13 @@ async function extractSubtitleIds(subtitlePageUrl) {
     try {
         console.log(`[Scraper] Extracting IDs from: ${subtitlePageUrl}`);
         
-        const response = await axios.get(subtitlePageUrl, {
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-            },
-            timeout: 10000
-        });
+        const response = await retryRequest(() =>
+            axios.get(subtitlePageUrl, {
+                headers: getBrowserHeaders(subtitlePageUrl),
+                timeout: 15000,
+                maxRedirects: 5
+            })
+        );
         
         const $ = cheerio.load(response.data);
         const subIds = [];
@@ -87,12 +124,13 @@ async function searchSubtitles(imdbId, type, season, episode) {
         }
         
         // Step 2: Scrape subtitle list from main page
-        const response = await axios.get(mainPageUrl, {
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-            },
-            timeout: 10000
-        });
+        const response = await retryRequest(() =>
+            axios.get(mainPageUrl, {
+                headers: getBrowserHeaders(mainPageUrl),
+                timeout: 15000,
+                maxRedirects: 5
+            })
+        );
         
         const $ = cheerio.load(response.data);
         const subtitlePages = [];
@@ -181,13 +219,14 @@ async function downloadSubtitle(idid, altid) {
             url: 'https://turkcealtyazi.org/ind',
             method: 'POST',
             headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/97.0.4692.71 Safari/537.36',
+                ...getBrowserHeaders('https://turkcealtyazi.org/'),
                 'Content-Type': 'application/x-www-form-urlencoded',
-                'Referer': 'https://turkcealtyazi.org/',
+                'Origin': 'https://turkcealtyazi.org'
             },
             data: `idid=${idid}&altid=${altid}`,
             responseType: 'arraybuffer',
-            timeout: 15000,
+            timeout: 20000,
+            maxRedirects: 5
         });
         
         console.log(`[Scraper] Download successful, size: ${response.data.length} bytes`);
