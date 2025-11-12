@@ -19,6 +19,20 @@ const userAgents = [
 
 const SCRAPER_API_KEY = '54bd854e8155103b70fd5da4e233c51c';
 
+const { HttpsProxyAgent } = require('https-proxy-agent');
+const AdmZip = require('adm-zip');
+
+const BRIGHTDATA_KEY = process.env.BRIGHTDATA_KEY || 'b9c0f981e2e1cd7becfbef43d8f83d3e6045dcc9c395ea49a46f31ed7e730afc'; // verdiğin key
+// Örnek default superproxy host/port; hesabına göre değiştir
+const BRIGHTDATA_PROXY_HOST = process.env.BRIGHTDATA_PROXY_HOST || 'brd.superproxy.io';
+const BRIGHTDATA_PROXY_PORT = process.env.BRIGHTDATA_PROXY_PORT || '33335';
+
+// Eğer özel bir proxy URL kullanmak istersen (ör. zone veya özel kullanıcı), BURAYA koy:
+// format: 'http://username:password@host:port'
+// veya set et: process.env.BRIGHTDATA_PROXY_URL
+const BRIGHTDATA_PROXY_URL = process.env.BRIGHTDATA_PROXY_URL ||
+  `http://${encodeURIComponent(BRIGHTDATA_KEY)}:@${BRIGHTDATA_PROXY_HOST}:${BRIGHTDATA_PROXY_PORT}`;
+
 const useProxy = !!process.env.PROXY_KEY;
 const proxyAxios = useProxy
   ? axios.create({
@@ -38,20 +52,16 @@ const getRandomUserAgent = () => {
     return userAgents[Math.floor(Math.random() * userAgents.length)];
 };
 
-// Realistic browser headers to avoid 403 - Google'dan gelmiş gibi göster
+const BRIGHTDATA_PROXY = `http://${encodeURIComponent(BRIGHTDATA_KEY)}:@brd.superproxy.io:33335`;
+
 const getBrowserHeaders = () => ({
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
     'Accept-Language': 'tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7',
-    'Accept-Encoding': 'gzip, deflate, br',
-    'Referer': 'https://www.google.com/',
-    'Origin': 'https://www.google.com',
-    'Connection': 'keep-alive',
-    'Upgrade-Insecure-Requests': '1',
-    'Cache-Control': 'max-age=0',
-    'DNT': '1'
+    'Referer': 'https://turkcealtyazi.org/',
+    'Origin': 'https://turkcealtyazi.org',
+    'Connection': 'keep-alive'
 });
-
 // Random delay to mimic human behavior
 const randomDelay = (min = 500, max = 1500) => {
     const delay = Math.floor(Math.random() * (max - min + 1)) + min;
@@ -279,55 +289,159 @@ async function searchSubtitles(imdbId, type, season, episode) {
         return [];
     }
 }
+
+const iconv = require('iconv-lite'); // unutma, npm i iconv-lite
+
 /**
  * Download and extract subtitle file
  */
-async function downloadSubtitle(idid, altid) {
-    try {
-        console.log(`[Scraper] Downloading: ${idid}-${altid}`);
-        
-        // ScraperAPI üzerinden POST isteği
-        const response = await scraperApiRequest('https://turkcealtyazi.org/ind', {
-            method: 'POST',
-            headers: {
-                ...getBrowserHeaders(),
-                'Content-Type': 'application/x-www-form-urlencoded',
-                'Referer': 'https://turkcealtyazi.org/',
-                'Origin': 'https://turkcealtyazi.org'
-            },
-            data: `idid=${idid}&altid=${altid}`,
-            responseType: 'arraybuffer',
-            timeout: 60000 // biraz daha uzun süre
-        });
-
-        const data = response.data;
-        const text = data.toString('utf8');
-
-        if (text.includes('-->') || /^\d+\s*$/m.test(text)) {
-            console.log(`[Scraper] ✅ Direct SRT detected!`);
-            return text;
-        }
-
-        // ZIP varsa aç
-        const AdmZip = require('adm-zip');
-        const zip = new AdmZip(data);
-        const zipEntries = zip.getEntries();
-
-        for (const entry of zipEntries) {
-            if (entry.entryName.endsWith('.srt')) {
-                console.log(`[Scraper] ✅ Found SRT in ZIP: ${entry.entryName}`);
-                return entry.getData().toString('utf8');
+function extractSrt(buffer) {
+    // ZIP mi kontrol et
+    const isZip = buffer[0] === 0x50 && buffer[1] === 0x4B;
+    if (isZip) {
+        try {
+            const zip = new AdmZip(buffer);
+            const entry = zip.getEntries().find(e => e.entryName.endsWith('.srt'));
+            if (entry) {
+                // ZIP içi için ilk deneme: windows-1254
+                return iconv.decode(entry.getData(), 'windows-1254'); 
             }
+        } catch (err) {
+            console.warn('ZIP açma hatası, ham data Recode ile deneniyor:', err.message);
         }
-
-        console.log(`[Scraper] ❌ No valid SRT found`);
-        return null;
-
-    } catch (err) {
-        console.error(`[Scraper] Download error: ${err.message}`);
-        return null;
+    }
+    
+try {
+        let detectedEncoding = chardet.detect(buffer);
+        console.log(`[Encoding Detector] Detected: ${detectedEncoding}`);
+        
+        // En yaygın ve doğru Türkçe kodlamalara öncelik ver
+        let finalEncoding = 'windows-1254'; 
+        if (detectedEncoding && detectedEncoding.toLowerCase().includes('utf-8')) {
+            finalEncoding = 'utf8';
+        } else if (detectedEncoding && detectedEncoding.toLowerCase().includes('iso-8859-9')) {
+            finalEncoding = 'iso-8859-9';
+        }
+        
+        // Final decode
+        return iconv.decode(buffer, finalEncoding);
+        
+    } catch (e) {
+        console.warn('[Encoding Detector] Detection failed, falling back to Recode.');
+        
+        // Eğer tespit başarısız olursa, son çare Recode
+        const faultyString = iconv.decode(buffer, 'latin1'); 
+        const correctedBuffer = iconv.encode(faultyString, 'windows-1254');
+        return iconv.decode(correctedBuffer, 'utf8');
     }
 }
+
+async function extractSrtSafe(buffer) {
+    // ZIP mi kontrol et
+    if (buffer[0] === 0x50 && buffer[1] === 0x4B) {
+        // Geçici dosyaya yaz
+        const tempZip = './temp.zip';
+        fs.writeFileSync(tempZip, buffer);
+
+        return new Promise((resolve, reject) => {
+            const zip = new StreamZip({ file: tempZip, storeEntries: true });
+
+            zip.on('ready', () => {
+                const entries = Object.values(zip.entries());
+                const srtEntry = entries.find(e => e.name.endsWith('.srt'));
+                if (!srtEntry) {
+                    zip.close();
+                    return reject(new Error('SRT bulunamadı ZIP içinde'));
+                }
+
+                zip.stream(srtEntry.name, (err, stream) => {
+                    if (err) return reject(err);
+
+                    const chunks = [];
+                    stream.on('data', chunk => chunks.push(chunk));
+                    stream.on('end', () => {
+                        zip.close();
+                        fs.unlinkSync(tempZip);
+                        // windows-1254 decode
+                        resolve(iconv.decode(Buffer.concat(chunks), 'windows-1254'));
+                    });
+                });
+            });
+
+            zip.on('error', err => {
+                fs.unlinkSync(tempZip);
+                reject(err);
+            });
+        });
+    }
+
+    // ZIP değilse direkt decode
+return iconv.decode(buffer, 'utf8');}
+
+
+const fs = require('fs');
+
+const StreamZip = require('node-stream-zip');
+
+// Subtitle indir
+// Subtitle indir
+const https = require('https');
+const url = require('url'); // Gerekirse URL parsing için
+
+// ... (diğer fonksiyonlar)
+
+async function downloadSubtitle(idid, altid) {
+    const postData = `idid=${idid}&altid=${altid}`;
+    const targetUrl = 'https://turkcealtyazi.org/ind';
+
+    const options = url.parse(targetUrl);
+    options.method = 'POST';
+    options.headers = {
+        'User-Agent': getRandomUserAgent(), 
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Content-Length': Buffer.byteLength(postData),
+        'Referer': 'https://turkcealtyazi.org/',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+        // Proxy kullanıyorsanız, buraya proxy ayarlarını eklemeniz gerekebilir
+    };
+
+    return new Promise((resolve, reject) => {
+        const req = https.request(options, (res) => {
+            const chunks = [];
+            
+            // Veriyi Buffer olarak, hiçbir decode işlemi yapmadan al
+            res.on('data', (chunk) => {
+                chunks.push(chunk);
+            });
+
+            res.on('end', () => {
+                const buffer = Buffer.concat(chunks);
+                console.log(`[Node.js Download] İndirilen ham buffer boyutu: ${buffer.byteLength}`);
+
+                if (res.statusCode !== 200) {
+                     return reject(new Error(`Download failed with status code: ${res.statusCode}`));
+                }
+
+                // Ham Buffer'ı Recode mantığı ile çöz
+                try {
+                    const srtText = extractSrt(buffer); 
+                    resolve(srtText);
+                } catch (e) {
+                    reject(e);
+                }
+            });
+        });
+
+        req.on('error', (e) => {
+            reject(new Error(`HTTPS request failed: ${e.message}`));
+        });
+
+        // POST verisini gönder
+        req.write(postData);
+        req.end();
+    });
+}
+// Helper: SRT veya ZIP içinden SRT çıkar
 
 module.exports = {
     searchSubtitles,
