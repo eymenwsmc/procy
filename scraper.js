@@ -90,38 +90,41 @@ async function retryRequest(requestFn, maxRetries = 5, initialDelay = 2000) {
     }
 }
 
-/**
- * Step 1: Find main page URL for movie/series
- */
 async function findMainPage(imdbId) {
     try {
-        const cleanId = imdbId.replace('tt', '');
-        const searchUrl = `https://turkcealtyazi.org/things_.php?t=99&term=${cleanId}`;
+        console.log(`[Scraper] Finding main page: https://turkcealtyazi.org/things_.php?t=99&term=${imdbId}`);
         
-        console.log(`[Scraper] Finding main page: ${searchUrl}`);
+        const searchUrl = `https://turkcealtyazi.org/things_.php?t=99&term=${imdbId}`;
+
+        // 🔹 ScraperAPI üzerinden istek gönderiyoruz
+        const response = await scraperApiRequest(searchUrl, {
+            method: 'GET',
+            headers: getBrowserHeaders(),
+            timeout: 20000,
+        });
+
+        const $ = cheerio.load(response.data);
         
-        const response = await retryRequest(() => 
-            axios.get(searchUrl, {
-                headers: getBrowserHeaders(),
-                timeout: 30000,
-                maxRedirects: 5
-            })
-        );
+        let mainPageUrl = null;
         
-        // Response is JSON array: [{url: "/mov/123/title.html", ...}]
-        if (response.data && Array.isArray(response.data) && response.data.length > 0) {
-            const mainPageUrl = `https://turkcealtyazi.org${response.data[0].url}`;
-            console.log(`[Scraper] Main page found: ${mainPageUrl}`);
-            return mainPageUrl;
-        }
+        // IMDb linki içeren bir sonuç bul
+        $('a').each((i, el) => {
+            const href = $(el).attr('href');
+            if (href && href.includes('id=')) {
+                mainPageUrl = 'https://turkcealtyazi.org' + href;
+                return false; // break
+            }
+        });
         
-        console.log(`[Scraper] No main page found in response`);
-        return null;
+        console.log(`[Scraper] Main page found: ${mainPageUrl}`);
+        return mainPageUrl;
+
     } catch (error) {
-        console.error(`[Scraper] Error finding main page: ${error.message}`);
+        console.error(`[Scraper] findMainPage error: ${error.message}`);
         return null;
     }
 }
+
 
 /**
  * Step 2: Extract subtitle IDs from subtitle page
