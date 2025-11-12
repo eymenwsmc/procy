@@ -391,55 +391,56 @@ const url = require('url'); // Gerekirse URL parsing için
 // ... (diğer fonksiyonlar)
 
 async function downloadSubtitle(idid, altid) {
-    const postData = `idid=${idid}&altid=${altid}`;
+    // 1. İndirme POST URL'sini oluştur
     const targetUrl = 'https://turkcealtyazi.org/ind';
-
-    const options = url.parse(targetUrl);
-    options.method = 'POST';
-    options.headers = {
-        'User-Agent': getRandomUserAgent(), 
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'Content-Length': Buffer.byteLength(postData),
-        'Referer': 'https://turkcealtyazi.org/',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
-        // Proxy kullanıyorsanız, buraya proxy ayarlarını eklemeniz gerekebilir
-    };
-
-    return new Promise((resolve, reject) => {
-        const req = https.request(options, (res) => {
-            const chunks = [];
+    
+    // 2. POST verisini URL'nin sorgu parametrelerine ekle
+    // Not: Normalde POST verisi body'de gider. Ancak bu, ScraperAPI'ye GET isteği atarak
+    // ScraperAPI'nin hedef URL'ye bizim için POST atmasını istemenin bir yoludur.
+    const urlWithParams = `${targetUrl}?idid=${idid}&altid=${altid}`;
+    
+    // 3. İndirmeyi ScraperAPI üzerinden zorunlu kıl
+    try {
+        console.log(`[Download via ScraperAPI] Subtitle indiriliyor: ${idid}-${altid}`);
+        
+        const response = await axios({
+            method: 'GET', // ScraperAPI'ye her zaman GET atıyoruz
+            url: SCRAPER_API_URL, 
+            params: {
+                api_key: SCRAPER_API_KEY,
+                url: urlWithParams, // Hedef URL'yi ve verileri ScraperAPI'ye bildir
+                // 🚨 KRİTİK AYAR: ScraperAPI'ye bu isteğin POST olduğunu bildiriyoruz
+                post_body: `idid=${idid}&altid=${altid}`, 
+                // ScraperAPI belgelerinde, proxy'den POST atmak için bu parametre kullanılır.
+            },
+            headers: {
+                // Tarayıcı başlıklarını ScraperAPI'ye gönderiyoruz
+                'User-Agent': getRandomUserAgent(),
+                'Referer': 'https://turkcealtyazi.org/',
+                // Cookie'ler de buraya eklenebilirdi (ama ScraperAPI'nin kendisi de yönetebilir)
+            },
             
-            // Veriyi Buffer olarak, hiçbir decode işlemi yapmadan al
-            res.on('data', (chunk) => {
-                chunks.push(chunk);
-            });
-
-            res.on('end', () => {
-                const buffer = Buffer.concat(chunks);
-                console.log(`[Node.js Download] İndirilen ham buffer boyutu: ${buffer.byteLength}`);
-
-                if (res.statusCode !== 200) {
-                     return reject(new Error(`Download failed with status code: ${res.statusCode}`));
-                }
-
-                // Ham Buffer'ı Recode mantığı ile çöz
-                try {
-                    const srtText = extractSrt(buffer); 
-                    resolve(srtText);
-                } catch (e) {
-                    reject(e);
-                }
-            });
+            // Veri tipini ArrayBuffer olarak almalıyız
+            responseType: 'arraybuffer', 
+            timeout: 40000
         });
 
-        req.on('error', (e) => {
-            reject(new Error(`HTTPS request failed: ${e.message}`));
-        });
+        const buffer = Buffer.from(response.data);
+        console.log(`[Download via ScraperAPI] İndirilen buffer boyutu: ${buffer.byteLength}`);
 
-        // POST verisini gönder
-        req.write(postData);
-        req.end();
-    });
+        if (response.status === 403 || buffer.byteLength < 100) {
+            console.error('[API] ❌ ScraperAPI 403/Hata Aldı. Kontrol Edin.');
+            throw new Error(`ScraperAPI returned a small or failed response.`);
+        }
+
+        // Ham Buffer'ı Recode mantığı ile çözüyoruz.
+        const srtText = extractSrt(buffer); 
+        return srtText;
+
+    } catch (err) {
+        console.error('Subtitle indirilemedi (ScraperAPI ile):', err.message);
+        throw err;
+    }
 }
 // Helper: SRT veya ZIP içinden SRT çıkar
 
