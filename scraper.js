@@ -6,6 +6,8 @@ axios.defaults.withCredentials = false;
 axios.defaults.maxRedirects = 5;
 axios.defaults.validateStatus = (status) => status >= 200 && status < 300;
 
+const SCRAPER_API_KEY = process.env.PROXY_KEY;
+const SCRAPER_API_URL = process.env.PROXY_URL || 'https://api.scraperapi.com';
 // Multiple realistic user agents for rotation
 const userAgents = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -163,17 +165,29 @@ async function extractSubtitleIds(subtitlePageUrl) {
     }
 }
 
-async function scraperApiRequest(url) {
-    const proxyUrl = `https://api.scraperapi.com/?api_key=${SCRAPER_API_KEY}&url=${encodeURIComponent(url)}`;
-    return axios.get(proxyUrl, {
-        timeout: 30000,
-        headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-            'Accept-Language': 'tr-TR,tr;q=0.9,en;q=0.8',
-        },
-    });
+async function scraperApiRequest(url, options = {}) {
+    const isProxyEnabled = !!SCRAPER_API_KEY;
+    const axiosInstance = isProxyEnabled
+        ? axios.create({
+            baseURL: SCRAPER_API_URL,
+            params: { api_key: SCRAPER_API_KEY, url },
+            timeout: options.timeout || 15000,
+            headers: options.headers || {},
+        })
+        : axios;
+
+    try {
+        if (isProxyEnabled) {
+            return await axiosInstance.get('', options);
+        } else {
+            return await axios.get(url, options);
+        }
+    } catch (err) {
+        console.error(`[ScraperAPI] Error: ${err.message}`);
+        throw err;
+    }
 }
-/**
+
  * Main scraper function
  * Searches subtitles by IMDb ID
  */
