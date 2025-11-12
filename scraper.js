@@ -286,73 +286,49 @@ async function downloadSubtitle(idid, altid) {
     try {
         console.log(`[Scraper] Downloading: ${idid}-${altid}`);
         
-        // ScraperAPI üzerinden POST isteği gönderiyoruz
-        const response = await retryRequest(() =>
-            scraperApiRequest('https://turkcealtyazi.org/ind', {
-                method: 'POST',
-                headers: {
-                    ...getBrowserHeaders(),
-                    'Content-Type': 'application/x-www-form-urlencoded',
-                    'Referer': 'https://turkcealtyazi.org/',
-                    'Origin': 'https://turkcealtyazi.org'
-                },
-                data: `idid=${idid}&altid=${altid}`,
-                responseType: 'arraybuffer',
-                timeout: 40000
-            })
-        );
-        
-        console.log(`[Scraper] Download successful, size: ${response.data.length} bytes`);
-        console.log(`[Scraper] Content-Type: ${response.headers['content-type']}`);
-        
-        // Content-Type kontrolü
-        const contentType = response.headers['content-type'] || '';
-        const dataStr = response.data.toString('utf8', 0, Math.min(100, response.data.length));
-        console.log(`[Scraper] First 100 bytes: ${dataStr}`);
-        
-        // Eğer direkt SRT dosyasıysa
-        if (dataStr.includes('-->') || /^\d+\s*$/m.test(dataStr)) {
+        // ScraperAPI üzerinden POST isteği
+        const response = await scraperApiRequest('https://turkcealtyazi.org/ind', {
+            method: 'POST',
+            headers: {
+                ...getBrowserHeaders(),
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'Referer': 'https://turkcealtyazi.org/',
+                'Origin': 'https://turkcealtyazi.org'
+            },
+            data: `idid=${idid}&altid=${altid}`,
+            responseType: 'arraybuffer',
+            timeout: 60000 // biraz daha uzun süre
+        });
+
+        const data = response.data;
+        const text = data.toString('utf8');
+
+        if (text.includes('-->') || /^\d+\s*$/m.test(text)) {
             console.log(`[Scraper] ✅ Direct SRT detected!`);
-            return response.data.toString('utf8');
+            return text;
         }
-        
-        // ZIP'ten çıkarma denemesi
-        try {
-            const AdmZip = require('adm-zip');
-            const zip = new AdmZip(response.data);
-            const zipEntries = zip.getEntries();
-            
-            console.log(`[Scraper] ZIP entries: ${zipEntries.length}`);
-            
-            for (const entry of zipEntries) {
-                console.log(`[Scraper] Entry: ${entry.entryName}`);
-                if (entry.entryName.endsWith('.srt')) {
-                    console.log(`[Scraper] ✅ Found SRT in ZIP: ${entry.entryName}`);
-                    return entry.getData().toString('utf8');
-                }
+
+        // ZIP varsa aç
+        const AdmZip = require('adm-zip');
+        const zip = new AdmZip(data);
+        const zipEntries = zip.getEntries();
+
+        for (const entry of zipEntries) {
+            if (entry.entryName.endsWith('.srt')) {
+                console.log(`[Scraper] ✅ Found SRT in ZIP: ${entry.entryName}`);
+                return entry.getData().toString('utf8');
             }
-            
-            console.log(`[Scraper] No SRT found in ZIP`);
-            return null;
-        } catch (zipError) {
-            console.log(`[Scraper] ZIP extraction failed: ${zipError.message}`);
-            console.log(`[Scraper] Trying as raw text...`);
-            
-            const text = response.data.toString('utf8');
-            if (text.includes('-->')) {
-                console.log(`[Scraper] ✅ Raw text is SRT!`);
-                return text;
-            }
-            
-            console.log(`[Scraper] ❌ Not a valid SRT`);
-            return null;
         }
-        
-    } catch (error) {
-        console.error(`[Scraper] Download error: ${error.message}`);
-        throw error;
+
+        console.log(`[Scraper] ❌ No valid SRT found`);
+        return null;
+
+    } catch (err) {
+        console.error(`[Scraper] Download error: ${err.message}`);
+        return null;
     }
 }
+
 module.exports = {
     searchSubtitles,
     downloadSubtitle
