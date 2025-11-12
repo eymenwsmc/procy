@@ -382,6 +382,17 @@ return iconv.decode(buffer, 'utf8');}
 const fs = require('fs');
 
 const StreamZip = require('node-stream-zip');
+const { CookieJar } = require('tough-cookie');
+const { wrapper } = require('axios-cookiejar-support');
+
+// Yeni CookieJar oluştur ve Axios'a entegre et
+const jar = new CookieJar();
+const client = wrapper(axios.create({
+    jar,
+    // Diğer genel ayarlar
+    maxRedirects: 5,
+    validateStatus: (status) => status >= 200 && status < 300,
+}));
 
 // Subtitle indir
 // Subtitle indir
@@ -389,48 +400,48 @@ const https = require('https');
 const url = require('url'); // Gerekirse URL parsing için
 
 // ... (diğer fonksiyonlar)
-
 async function downloadSubtitle(idid, altid) {
-    // 1. İndirme URL'sini, post verisi query string'i gibi ekleyerek oluştur.
-    // Bu, ScraperAPI'nin doğrudan bu URL'ye gitmesini ve indirmeyi yapmasını sağlamak için bir hile.
-    // turkcealtyazi.org/ind?idid=...&altid=...
-    const downloadQueryUrl = `https://turkcealtyazi.org/ind?idid=${idid}&altid=${altid}`;
-    
+    const postData = `idid=${idid}&altid=${altid}`;
+    const targetUrl = 'https://turkcealtyazi.org/ind';
+
     try {
-        console.log(`[Download via ScraperAPI - Simple GET] Subtitle indiriliyor: ${idid}-${altid}`);
+        console.log(`[Download via Client] Subtitle indiriliyor: ${idid}-${altid}`);
         
-        // POST_BODY'yi tamamen kaldırıp, ScraperAPI'den bu URL'yi ziyaret etmesini istiyoruz.
-        const response = await axios({
-            method: 'GET', // ScraperAPI'ye GET atıyoruz
-            url: SCRAPER_API_URL, 
-            params: {
-                api_key: SCRAPER_API_KEY,
-                url: downloadQueryUrl, // Sadeleştirilmiş URL
-                // post_body'yi kaldırdık
-            },
+        // Bu istek, önceki GET isteklerinde toplanan çerezleri otomatik olarak gönderecek.
+        const response = await client.post(targetUrl, postData, {
             headers: {
-                'User-Agent': getRandomUserAgent(),
+                'User-Agent': getRandomUserAgent(), 
+                'Content-Type': 'application/x-www-form-urlencoded',
                 'Referer': 'https://turkcealtyazi.org/',
+                // Sitenin isteyebileceği ek başlıklar
+                'X-Requested-With': 'XMLHttpRequest', // AJAX isteği taklidi
+                'Connection': 'keep-alive',
             },
             
-            responseType: 'arraybuffer', // Ham Buffer olarak alın
+            // Veri tipini Buffer olarak almalıyız
+            responseType: 'arraybuffer', 
             timeout: 40000
         });
 
         const buffer = Buffer.from(response.data);
-        console.log(`[Download via ScraperAPI - Simple GET] İndirilen buffer boyutu: ${buffer.byteLength}`);
+        console.log(`[Download via Client] İndirilen ham buffer boyutu: ${buffer.byteLength}`);
 
-        if (response.status !== 200 || buffer.byteLength < 500) {
-            console.error('[API] ❌ ScraperAPI başarılı bir indirme yapamadı.');
-            throw new Error(`ScraperAPI returned a small or failed response.`);
+        if (response.status === 403 || buffer.byteLength < 500) {
+            throw new Error(`Download failed with status: ${response.status} or tiny buffer.`);
         }
-
+        
         // Karakter kodlama çözümü (Recode Mantığı)
+        // extractSrt(buffer) fonksiyonunuzun içinde bu mantık KESİNLİKLE olmalı:
+        /*
+        const faultyString = iconv.decode(buffer, 'latin1'); 
+        const correctedBuffer = iconv.encode(faultyString, 'windows-1254');
+        return iconv.decode(correctedBuffer, 'utf8');
+        */
         const srtText = extractSrt(buffer); 
         return srtText;
 
     } catch (err) {
-        console.error('Subtitle indirilemedi (ScraperAPI ile):', err.message);
+        console.error('Subtitle indirilemedi (Çerez ile):', err.message);
         throw err;
     }
 }
