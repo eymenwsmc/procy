@@ -16,6 +16,22 @@ const userAgents = [
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15'
 ];
 
+const SCRAPER_API_KEY = '54bd854e8155103b70fd5da4e233c51c';
+
+const useProxy = !!process.env.PROXY_KEY;
+const proxyAxios = useProxy
+  ? axios.create({
+      baseURL: process.env.PROXY_URL || 'https://api.scraperapi.com',
+      params: { api_key: process.env.PROXY_KEY },
+      timeout: 15000,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36',
+        'Accept-Language': 'tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+      }
+    })
+  : axios;
+
 // Get random user agent
 const getRandomUserAgent = () => {
     return userAgents[Math.floor(Math.random() * userAgents.length)];
@@ -144,6 +160,16 @@ async function extractSubtitleIds(subtitlePageUrl) {
     }
 }
 
+async function scraperApiRequest(url) {
+    const proxyUrl = `https://api.scraperapi.com/?api_key=${SCRAPER_API_KEY}&url=${encodeURIComponent(url)}`;
+    return axios.get(proxyUrl, {
+        timeout: 30000,
+        headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+            'Accept-Language': 'tr-TR,tr;q=0.9,en;q=0.8',
+        },
+    });
+}
 /**
  * Main scraper function
  * Searches subtitles by IMDb ID
@@ -161,13 +187,9 @@ async function searchSubtitles(imdbId, type, season, episode) {
             return [];
         }
         
-        // Step 2: Scrape subtitle list from main page
+        // Step 2: Scrape subtitle list from main page (ScraperAPI eklendi)
         const response = await retryRequest(() =>
-            axios.get(mainPageUrl, {
-                headers: getBrowserHeaders(),
-                timeout: 30000,
-                maxRedirects: 5
-            })
+            scraperApiRequest(mainPageUrl) // burada ScraperAPI kullanıyoruz
         );
         
         const $ = cheerio.load(response.data);
@@ -217,13 +239,12 @@ async function searchSubtitles(imdbId, type, season, episode) {
         
         console.log(`[Scraper] Found ${subtitlePages.length} subtitle pages`);
         
-        // Step 3: Extract IDs from each subtitle page and create download URLs
+        // Step 3: Extract IDs from each subtitle page
         for (const subPage of subtitlePages) {
             const ids = await extractSubtitleIds(subPage.url);
             
             if (ids.length > 0) {
-                const { idid, altid } = ids[0]; // Use first ID
-                // Use relative URL for Android emulator compatibility
+                const { idid, altid } = ids[0];
                 const downloadUrl = `/download/${idid}-${altid}.srt`;
                 
                 subtitles.push({
@@ -244,7 +265,6 @@ async function searchSubtitles(imdbId, type, season, episode) {
         return [];
     }
 }
-
 /**
  * Download and extract subtitle file
  */
@@ -252,10 +272,9 @@ async function downloadSubtitle(idid, altid) {
     try {
         console.log(`[Scraper] Downloading: ${idid}-${altid}`);
         
-        // Use POST method (working method from reference code)
+        // ScraperAPI üzerinden POST isteği gönderiyoruz
         const response = await retryRequest(() =>
-            axios({
-                url: 'https://turkcealtyazi.org/ind',
+            scraperApiRequest('https://turkcealtyazi.org/ind', {
                 method: 'POST',
                 headers: {
                     ...getBrowserHeaders(),
@@ -265,27 +284,25 @@ async function downloadSubtitle(idid, altid) {
                 },
                 data: `idid=${idid}&altid=${altid}`,
                 responseType: 'arraybuffer',
-                timeout: 40000,
-                maxRedirects: 5
+                timeout: 40000
             })
         );
         
         console.log(`[Scraper] Download successful, size: ${response.data.length} bytes`);
         console.log(`[Scraper] Content-Type: ${response.headers['content-type']}`);
         
-        // Check if it's already SRT text (not ZIP)
+        // Content-Type kontrolü
         const contentType = response.headers['content-type'] || '';
         const dataStr = response.data.toString('utf8', 0, Math.min(100, response.data.length));
-        
         console.log(`[Scraper] First 100 bytes: ${dataStr}`);
         
-        // If starts with "1" or contains "-->", it's already SRT
+        // Eğer direkt SRT dosyasıysa
         if (dataStr.includes('-->') || /^\d+\s*$/m.test(dataStr)) {
             console.log(`[Scraper] ✅ Direct SRT detected!`);
             return response.data.toString('utf8');
         }
         
-        // Try to extract from ZIP
+        // ZIP'ten çıkarma denemesi
         try {
             const AdmZip = require('adm-zip');
             const zip = new AdmZip(response.data);
@@ -293,7 +310,6 @@ async function downloadSubtitle(idid, altid) {
             
             console.log(`[Scraper] ZIP entries: ${zipEntries.length}`);
             
-            // Find first .srt file
             for (const entry of zipEntries) {
                 console.log(`[Scraper] Entry: ${entry.entryName}`);
                 if (entry.entryName.endsWith('.srt')) {
@@ -308,7 +324,6 @@ async function downloadSubtitle(idid, altid) {
             console.log(`[Scraper] ZIP extraction failed: ${zipError.message}`);
             console.log(`[Scraper] Trying as raw text...`);
             
-            // Fallback: return as text
             const text = response.data.toString('utf8');
             if (text.includes('-->')) {
                 console.log(`[Scraper] ✅ Raw text is SRT!`);
@@ -324,7 +339,6 @@ async function downloadSubtitle(idid, altid) {
         throw error;
     }
 }
-
 module.exports = {
     searchSubtitles,
     downloadSubtitle
