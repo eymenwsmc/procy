@@ -165,27 +165,33 @@ async function extractSubtitleIds(subtitlePageUrl) {
 }
 
 async function scraperApiRequest(url, options = {}) {
-    const isProxyEnabled = !!SCRAPER_API_KEY;
-    const axiosInstance = isProxyEnabled
-        ? axios.create({
-            baseURL: SCRAPER_API_URL,
-            params: { api_key: SCRAPER_API_KEY, url },
-            timeout: options.timeout || 15000,
-            headers: options.headers || {},
-        })
-        : axios;
-
     try {
-        if (isProxyEnabled) {
-            return await axiosInstance.get('', options);
+        if (SCRAPER_API_KEY) {
+            // ScraperAPI üzerinden GET isteği
+            const response = await axios.get('https://api.scraperapi.com', {
+                params: {
+                    api_key: SCRAPER_API_KEY,
+                    url: url
+                },
+                headers: options.headers || {},
+                timeout: options.timeout || 15000,
+                responseType: 'text'
+            });
+            // Cheerio için string dönüşümü
+            response.data = response.data.toString('utf8');
+            return response;
         } else {
-            return await axios.get(url, options);
+            // Direkt normal GET
+            const response = await axios.get(url, options);
+            response.data = response.data.toString('utf8');
+            return response;
         }
     } catch (err) {
         console.error(`[ScraperAPI] Error: ${err.message}`);
         throw err;
     }
 }
+
 
  
 async function searchSubtitles(imdbId, type, season, episode) {
