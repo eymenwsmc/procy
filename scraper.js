@@ -97,26 +97,21 @@ async function findMainPage(imdbId) {
         
         const searchUrl = `https://turkcealtyazi.org/things_.php?t=99&term=${imdbId}`;
 
-        // 🔹 ScraperAPI üzerinden istek gönderiyoruz
         const response = await scraperApiRequest(searchUrl, {
             method: 'GET',
             headers: getBrowserHeaders(),
             timeout: 20000,
         });
 
-        const $ = cheerio.load(response.data);
-        
+        // JSON parse et
+        const data = typeof response.data === 'string' ? JSON.parse(response.data) : response.data;
+
         let mainPageUrl = null;
-        
-        // IMDb linki içeren bir sonuç bul
-        $('a').each((i, el) => {
-            const href = $(el).attr('href');
-            if (href && href.includes('id=')) {
-                mainPageUrl = 'https://turkcealtyazi.org' + href;
-                return false; // break
-            }
-        });
-        
+
+        if (Array.isArray(data) && data.length > 0 && data[0].url) {
+            mainPageUrl = 'https://turkcealtyazi.org' + data[0].url;
+        }
+
         console.log(`[Scraper] Main page found: ${mainPageUrl}`);
         return mainPageUrl;
 
