@@ -391,49 +391,41 @@ const url = require('url'); // Gerekirse URL parsing için
 // ... (diğer fonksiyonlar)
 
 async function downloadSubtitle(idid, altid) {
-    // 1. İndirme POST URL'sini oluştur
-    const targetUrl = 'https://turkcealtyazi.org/ind';
+    // 1. İndirme URL'sini, post verisi query string'i gibi ekleyerek oluştur.
+    // Bu, ScraperAPI'nin doğrudan bu URL'ye gitmesini ve indirmeyi yapmasını sağlamak için bir hile.
+    // turkcealtyazi.org/ind?idid=...&altid=...
+    const downloadQueryUrl = `https://turkcealtyazi.org/ind?idid=${idid}&altid=${altid}`;
     
-    // 2. POST verisini URL'nin sorgu parametrelerine ekle
-    // Not: Normalde POST verisi body'de gider. Ancak bu, ScraperAPI'ye GET isteği atarak
-    // ScraperAPI'nin hedef URL'ye bizim için POST atmasını istemenin bir yoludur.
-    const urlWithParams = `${targetUrl}?idid=${idid}&altid=${altid}`;
-    
-    // 3. İndirmeyi ScraperAPI üzerinden zorunlu kıl
     try {
-        console.log(`[Download via ScraperAPI] Subtitle indiriliyor: ${idid}-${altid}`);
+        console.log(`[Download via ScraperAPI - Simple GET] Subtitle indiriliyor: ${idid}-${altid}`);
         
+        // POST_BODY'yi tamamen kaldırıp, ScraperAPI'den bu URL'yi ziyaret etmesini istiyoruz.
         const response = await axios({
-            method: 'GET', // ScraperAPI'ye her zaman GET atıyoruz
+            method: 'GET', // ScraperAPI'ye GET atıyoruz
             url: SCRAPER_API_URL, 
             params: {
                 api_key: SCRAPER_API_KEY,
-                url: urlWithParams, // Hedef URL'yi ve verileri ScraperAPI'ye bildir
-                // 🚨 KRİTİK AYAR: ScraperAPI'ye bu isteğin POST olduğunu bildiriyoruz
-                post_body: `idid=${idid}&altid=${altid}`, 
-                // ScraperAPI belgelerinde, proxy'den POST atmak için bu parametre kullanılır.
+                url: downloadQueryUrl, // Sadeleştirilmiş URL
+                // post_body'yi kaldırdık
             },
             headers: {
-                // Tarayıcı başlıklarını ScraperAPI'ye gönderiyoruz
                 'User-Agent': getRandomUserAgent(),
                 'Referer': 'https://turkcealtyazi.org/',
-                // Cookie'ler de buraya eklenebilirdi (ama ScraperAPI'nin kendisi de yönetebilir)
             },
             
-            // Veri tipini ArrayBuffer olarak almalıyız
-            responseType: 'arraybuffer', 
+            responseType: 'arraybuffer', // Ham Buffer olarak alın
             timeout: 40000
         });
 
         const buffer = Buffer.from(response.data);
-        console.log(`[Download via ScraperAPI] İndirilen buffer boyutu: ${buffer.byteLength}`);
+        console.log(`[Download via ScraperAPI - Simple GET] İndirilen buffer boyutu: ${buffer.byteLength}`);
 
-        if (response.status === 403 || buffer.byteLength < 100) {
-            console.error('[API] ❌ ScraperAPI 403/Hata Aldı. Kontrol Edin.');
+        if (response.status !== 200 || buffer.byteLength < 500) {
+            console.error('[API] ❌ ScraperAPI başarılı bir indirme yapamadı.');
             throw new Error(`ScraperAPI returned a small or failed response.`);
         }
 
-        // Ham Buffer'ı Recode mantığı ile çözüyoruz.
+        // Karakter kodlama çözümü (Recode Mantığı)
         const srtText = extractSrt(buffer); 
         return srtText;
 
