@@ -18,7 +18,6 @@ const userAgents = [
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15'
 ];
 
-const SCRAPER_API_KEY = '54bd854e8155103b70fd5da4e233c51c';
 
 const useProxy = !!process.env.PROXY_KEY;
 const proxyAxios = useProxy
