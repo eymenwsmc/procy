@@ -6,7 +6,6 @@ axios.defaults.withCredentials = false;
 axios.defaults.maxRedirects = 5;
 axios.defaults.validateStatus = (status) => status >= 200 && status < 300;
 
-const SCRAPER_API_KEY = process.env.PROXY_KEY;
 const SCRAPER_API_URL = process.env.PROXY_URL || 'https://api.scraperapi.com';
 // Multiple realistic user agents for rotation
 const userAgents = [
@@ -18,6 +17,7 @@ const userAgents = [
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15'
 ];
 
+const SCRAPER_API_KEY = '54bd854e8155103b70fd5da4e233c51c';
 
 const useProxy = !!process.env.PROXY_KEY;
 const proxyAxios = useProxy
@@ -187,9 +187,7 @@ async function scraperApiRequest(url, options = {}) {
     }
 }
 
- * Main scraper function
- * Searches subtitles by IMDb ID
- */
+ 
 async function searchSubtitles(imdbId, type, season, episode) {
     try {
         console.log(`[Scraper] Searching: ${imdbId}, type: ${type}, S${season}E${episode}`);
