@@ -129,27 +129,25 @@ async function extractSubtitleIds(subtitlePageUrl) {
     try {
         console.log(`[Scraper] Extracting IDs from: ${subtitlePageUrl}`);
         
+        // 🔹 ScraperAPI üzerinden isteği gönder
         const response = await retryRequest(() =>
-            axios.get(subtitlePageUrl, {
+            scraperApiRequest(subtitlePageUrl, {
                 headers: getBrowserHeaders(),
-                timeout: 30000,
-                maxRedirects: 5
+                timeout: 30000
             })
         );
-        
+
         const $ = cheerio.load(response.data);
         const subIds = [];
         
-        // Find forms with action="/ind"
         $('form[action="/ind"] > div').each((i, section) => {
             const idid = $(section).children('input[name="idid"]').attr('value');
             const altid = $(section).children('input[name="altid"]').attr('value');
-            
             if (idid && altid) {
                 subIds.push({ idid, altid });
             }
         });
-        
+
         console.log(`[Scraper] Found ${subIds.length} subtitle IDs`);
         return subIds;
         
@@ -158,6 +156,7 @@ async function extractSubtitleIds(subtitlePageUrl) {
         return [];
     }
 }
+
 
 async function scraperApiRequest(url, options = {}) {
     try {
