@@ -1,287 +1,623 @@
-require('dotenv').config();
-const express = require('express');
-const cors = require('cors');
-const rateLimit = require('express-rate-limit');
-const NodeCache = require('node-cache');
-const { searchSubtitles, downloadSubtitle } = require('./scraper');
+const axios = require('axios');
+const cheerio = require('cheerio');
+const chardet = require('chardet');
 
-const app = express();
-const PORT = process.env.PORT || 3000;
+// Configure axios defaults
+axios.defaults.withCredentials = false;
+axios.defaults.maxRedirects = 5;
+axios.defaults.validateStatus = (status) => status >= 200 && status < 300;
 
-// Trust proxy - Vercel için ZORUNLU
-app.set('trust proxy', true);
+// Multiple realistic user agents for rotation
+const userAgents = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15'
+];
 
-// Enable CORS
-app.use(cors());
+const AdmZip = require('adm-zip');
+const iconv = require('iconv-lite');
 
-// Rate limiting - Simplified for Vercel
-const limiter = rateLimit({
-    windowMs: 15 * 60 * 1000,
-    max: 100,
-    message: { error: 'Too many requests, please try again later.' },
-    standardHeaders: true,
-    legacyHeaders: false,
-    // Vercel için: X-Forwarded-For header'ı kullan
-    keyGenerator: (req) => {
-        return req.headers['x-forwarded-for']?.split(',')[0] || 
-               req.headers['x-real-ip'] || 
-               req.ip || 
-               'unknown';
-    },
-    skip: (req) => {
-        return req.path === '/' || req.path === '/manifest.json' || req.path === '/cache/stats';
-    }
+// Get random user agent
+const getRandomUserAgent = () => {
+    return userAgents[Math.floor(Math.random() * userAgents.length)];
+};
+
+// BRIGHTDATA_KEY tanımını kaldırdık çünkü kullanmıyoruz
+
+const getBrowserHeaders = () => ({
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'Accept-Language': 'tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7',
+    'Referer': 'https://turkcealtyazi.org/',
+    'Origin': 'https://turkcealtyazi.org',
+    'Connection': 'keep-alive'
 });
+// Random delay to mimic human behavior
+const randomDelay = (min = 500, max = 1500) => {
+    const delay = Math.floor(Math.random() * (max - min + 1)) + min;
+    return new Promise(resolve => setTimeout(resolve, delay));
+};
 
-app.use(limiter);
-
-// Cache (15 minutes TTL)
-const cache = new NodeCache({ stdTTL: 15 * 60, checkperiod: 120 });
-
-// Logging middleware
-app.use((req, res, next) => {
-    console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
-    next();
-});
-
-/**
- * Health check endpoint
- */
-app.get('/', (req, res) => {
-    res.json({
-        name: 'Turkcealtyazi Subtitle Backend',
-        version: '1.0.0',
-        status: 'running',
-        endpoints: {
-            subtitles: '/subtitles/:type/:imdbId.json',
-            download: '/download/:idid-:altid.zip'
-        }
-    });
-});
-
-/**
- * Manifest endpoint (for Stremio compatibility)
- */
-app.get('/manifest.json', (req, res) => {
-    res.json({
-        id: 'org.dataflix.turkcealtyazi',
-        version: '1.0.0',
-        name: 'Turkcealtyazi Backend',
-        description: 'Turkish subtitles from turkcealtyazi.org',
-        resources: ['subtitles'],
-        types: ['movie', 'series'],
-        idPrefixes: ['tt']
-    });
-});
-
-/**
- * Search subtitles endpoint
- * Format: /subtitles/movie/tt1234567.json
- * Format: /subtitles/series/tt1234567:1:5.json (season 1, episode 5)
- */
-app.get('/subtitles/:type/:imdbId.json', async (req, res) => {
-    try {
-        const { type, imdbId } = req.params;
-        
-        // Parse IMDb ID and season/episode
-        const parts = imdbId.split(':');
-        const cleanImdbId = parts[0];
-        const season = parts[1] ? parseInt(parts[1]) : null;
-        const episode = parts[2] ? parseInt(parts[2]) : null;
-        
-        const cacheKey = `${type}-${imdbId}`;
-        
-        // Check cache
-        if (cache.has(cacheKey)) {
-            console.log(`[Cache] Hit: ${cacheKey}`);
-            return res.json(cache.get(cacheKey));
-        }
-        
-        // Search subtitles
-        console.log(`[API] Searching: ${type} ${cleanImdbId} S${season}E${episode}`);
-        
+// Retry with exponential backoff
+async function retryRequest(requestFn, maxRetries = 5, initialDelay = 2000) {
+    for (let i = 0; i < maxRetries; i++) {
         try {
-            const subtitles = await searchSubtitles(cleanImdbId, type, season, episode);
+            // Random delay before each request (except first)
+            if (i > 0) {
+                await randomDelay(1000, 3000);
+            }
+            return await requestFn();
+        } catch (error) {
+            const isLastAttempt = i === maxRetries - 1;
+            const is403 = error.response && error.response.status === 403;
+            const is429 = error.response && error.response.status === 429;
             
-            const response = {
-                subtitles: subtitles,
-                cacheMaxAge: 4 * 60 * 60, // 4 hours
-                staleRevalidate: 4 * 60 * 60,
-                staleError: 7 * 24 * 60 * 60
-            };
-            
-            // Cache the response
-            if (subtitles.length > 0) {
-                cache.set(cacheKey, response, 15 * 60); // 15 minutes
-            } else {
-                cache.set(cacheKey, response, 2 * 60); // 2 minutes for empty results
+            if ((is403 || is429) && !isLastAttempt) {
+                const delay = initialDelay * Math.pow(2, i);
+                console.log(`[Scraper] ${error.response.status} detected, retrying in ${delay}ms... (attempt ${i + 1}/${maxRetries})`);
+                await new Promise(resolve => setTimeout(resolve, delay));
+                continue;
             }
             
-            res.json(response);
-        } catch (searchError) {
-            console.error(`[API] Search error: ${searchError.message}`);
-            
-            // Return empty but valid response
-            const fallbackResponse = {
-                subtitles: [],
-                error: 'Service temporarily unavailable - blocked by upstream',
-                message: 'Turkcealtyazi.org may be blocking requests. Try again later.',
-                cacheMaxAge: 60, // 1 minute
-                staleRevalidate: 60,
-                staleError: 60
-            };
-            
-            // Cache empty response briefly
-            cache.set(cacheKey, fallbackResponse, 60); // 1 minute
-            
-            res.json(fallbackResponse);
+            if (!isLastAttempt) {
+                // Retry other errors too (network issues, etc.)
+                const delay = initialDelay * Math.pow(1.5, i);
+                console.log(`[Scraper] Error: ${error.message}, retrying in ${delay}ms... (attempt ${i + 1}/${maxRetries})`);
+                await new Promise(resolve => setTimeout(resolve, delay));
+                continue;
+            }
+            throw error;
         }
-        
-    } catch (error) {
-        console.error(`[API] Error: ${error.message}`);
-        res.status(500).json({
-            subtitles: [],
-            error: 'Failed to fetch subtitles'
-        });
     }
-});
+}
+
+async function findMainPage(imdbId) {
+    try {
+        console.log(`[Scraper] Finding main page: https://turkcealtyazi.org/things_.php?t=99&term=${imdbId}`);
+        
+        const searchUrl = `https://turkcealtyazi.org/things_.php?t=99&term=${imdbId}`;
+
+        const response = await scraperApiRequest(searchUrl, {
+            method: 'GET',
+            headers: getBrowserHeaders(),
+            timeout: 20000,
+        });
+
+        // JSON parse et
+        const data = typeof response.data === 'string' ? JSON.parse(response.data) : response.data;
+
+        let mainPageUrl = null;
+
+        if (Array.isArray(data) && data.length > 0 && data[0].url) {
+            mainPageUrl = 'https://turkcealtyazi.org' + data[0].url;
+        }
+
+        console.log(`[Scraper] Main page found: ${mainPageUrl}`);
+        return mainPageUrl;
+
+    } catch (error) {
+        console.error(`[Scraper] findMainPage error: ${error.message}`);
+        return null;
+    }
+}
+
 
 /**
- * Download subtitle endpoint (returns SRT text)
- * Format: /download/12345-67890.srt
+ * Step 2: Extract subtitle IDs from subtitle page
  */
-app.get('/download/:idid-:altid.srt', async (req, res) => {
+async function extractSubtitleIds(subtitlePageUrl) {
     try {
-        const { idid, altid } = req.params;
+        console.log(`[Scraper] Extracting IDs from: ${subtitlePageUrl}`);
         
-        console.log(`[API] 📥 Downloading: ${idid}-${altid}`);
+        // 🔹 ScraperAPI üzerinden isteği gönder
+        const response = await retryRequest(() =>
+            scraperApiRequest(subtitlePageUrl, {
+                headers: getBrowserHeaders(),
+                timeout: 30000
+            })
+        );
+
+        const $ = cheerio.load(response.data);
+        const subIds = [];
         
-        const subtitleText = await downloadSubtitle(idid, altid);
-        
-        if (!subtitleText) {
-            console.log(`[API] ❌ Subtitle not found or empty`);
-            return res.status(404).send('Subtitle not found');
-        }
-        
-        console.log(`[API] ✅ Subtitle ready - Length: ${subtitleText.length} chars`);
-        console.log(`[API] 📝 First 200 chars: ${subtitleText.substring(0, 200)}`);
-        console.log(`[API] 🔤 Contains Turkish chars: ${/[çğıöşüÇĞİÖŞÜ]/.test(subtitleText)}`);
-        console.log(`[API] ⚠️ Contains broken chars: ${/[ÄÃÅ][°±¼§¶\u009f\u009e\u0087\u009c\u0096]/.test(subtitleText)}`);
-        
-        res.set({
-            'Content-Type': 'text/plain; charset=utf-8',
-            'Cache-Control': 'public, max-age=86400', // 24 hours
-            'Access-Control-Allow-Origin': '*'
+        $('form[action="/ind"] > div').each((i, section) => {
+            const idid = $(section).children('input[name="idid"]').attr('value');
+            const altid = $(section).children('input[name="altid"]').attr('value');
+            if (idid && altid) {
+                subIds.push({ idid, altid });
+            }
         });
-        
-        res.send(subtitleText);
+
+        console.log(`[Scraper] Found ${subIds.length} subtitle IDs`);
+        return subIds;
         
     } catch (error) {
-        console.error(`[API] ❌ Download error: ${error.message}`);
-        res.status(500).send('Failed to download subtitle');
+        console.error(`[Scraper] Error extracting IDs: ${error.message}`);
+        return [];
     }
-});
+}
 
-/**
- * Preview subtitle content (for debugging)
- * Format: /preview/12345-67890
- */
-app.get('/preview/:idid-:altid', async (req, res) => {
+
+async function scraperApiRequest(url, options = {}) {
+    const SCRAPINGBEE_KEY = "5ILBVRJ2DVDK8B9M1QVOGHLY9DQAWNOX9R7368205HXXGJWMS6CSYZSJ4CJKLF8MVB08F1NRQVSAOXF3";
     try {
-        const { idid, altid } = req.params;
-        
-        console.log(`[API] 👀 Previewing: ${idid}-${altid}`);
-        
-        const subtitleText = await downloadSubtitle(idid, altid);
-        
-        if (!subtitleText) {
-            return res.status(404).json({ error: 'Subtitle not found' });
-        }
-        
-        const lines = subtitleText.split('\n');
-        
-        res.json({
-            success: true,
-            stats: {
-                totalLength: subtitleText.length,
-                totalLines: lines.length,
-                hasTurkishChars: /[çğıöşüÇĞİÖŞÜ]/.test(subtitleText),
-                encoding: 'UTF-8'
+        console.log(`[ScrapingBee] Requesting: ${url}`);
+
+        const response = await axios.get("https://app.scrapingbee.com/api/v1/", {
+            params: {
+                api_key: SCRAPINGBEE_KEY,
+                url: url,
+                render_js: false,
+                country_code: "tr", // Türkiye IP’leri bazen daha stabil
+                premium_proxy: "true"
             },
-            preview: {
-                first50Lines: lines.slice(0, 50).join('\n'),
-                last10Lines: lines.slice(-10).join('\n')
-            }
+            headers: {
+                ...(options.headers || {}),
+                "User-Agent": getRandomUserAgent(),
+                "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+            },
+            timeout: options.timeout || 20000,
+            responseType: "text"
         });
+
+        if (!response.data) {
+            throw new Error("Boş yanıt alındı (ScrapingBee)");
+        }
+
+        response.data = response.data.toString("utf8");
+        return response;
+
+    } catch (err) {
+        console.error(`[ScrapingBee] Error: ${err.message}`);
+        if (err.response) {
+            console.error(`[ScrapingBee] Status: ${err.response.status}`);
+        }
+        throw err;
+    }
+}
+
+
+
+ 
+async function searchSubtitles(imdbId, type, season, episode) {
+    try {
+        console.log(`[Scraper] Searching: ${imdbId}, type: ${type}, S${season}E${episode}`);
+        
+        const subtitles = [];
+        
+        // Step 1: Find main page
+        const mainPageUrl = await findMainPage(imdbId);
+        if (!mainPageUrl) {
+            console.log(`[Scraper] No main page found`);
+            return [];
+        }
+        
+        // Step 2: Scrape subtitle list from main page (ScraperAPI eklendi)
+        const response = await retryRequest(() =>
+            scraperApiRequest(mainPageUrl) // burada ScraperAPI kullanıyoruz
+        );
+        
+        const $ = cheerio.load(response.data);
+        const subtitlePages = [];
+        
+        if (type === 'movie') {
+            // For movies: Get Turkish subtitles with CD = 1
+            $('.altyazi-list-wrapper > div > div').each((i, section) => {
+                const subPageUrl = $(section).children('.alisim').children('.fl').children('a').attr('href');
+                const subLang = $(section).children('.aldil').children('span').attr('class');
+                const cd = parseInt($(section).children('.alcd').text().trim()) || 1;
+                const releaseName = $(section).children('.alisim').children('.fl').children('a').text().trim();
+                
+                if (subLang === 'flagtr' && subPageUrl && cd === 1) {
+                    subtitlePages.push({
+                        url: 'https://turkcealtyazi.org' + subPageUrl,
+                        releaseName: releaseName || `Subtitle ${i + 1}`
+                    });
+                }
+            });
+        } else {
+            // For series: Get Turkish subtitles for specific season/episode
+            $('.altyazi-list-wrapper > div > div').each((i, section) => {
+                const subPageUrl = $(section).children('.alisim').children('.fl').children('a').attr('href');
+                const subLang = $(section).children('.aldil').children('span').attr('class');
+                const seasonText = $(section).children('.alcd').children('b').first().text().trim();
+                const episodeText = $(section).children('.alcd').children('b').last().text().trim();
+                const releaseName = $(section).children('.alisim').children('.fl').children('a').text().trim();
+                
+                let seasonNumber = parseInt(seasonText.replace(/^0+/, '')) || 0;
+                let episodeNumber = episodeText;
+                
+                if (episodeNumber !== 'Paket' && episodeNumber !== 'paket') {
+                    episodeNumber = parseInt(episodeText.replace(/^0+/, '')) || 0;
+                }
+                
+                if (subLang === 'flagtr' && subPageUrl && season === seasonNumber) {
+                    if (episode === episodeNumber || episodeNumber === 'Paket' || episodeNumber === 'paket') {
+                        subtitlePages.push({
+                            url: 'https://turkcealtyazi.org' + subPageUrl,
+                            releaseName: releaseName || `S${season}E${episode} ${i + 1}`
+                        });
+                    }
+                }
+            });
+        }
+        
+        console.log(`[Scraper] Found ${subtitlePages.length} subtitle pages`);
+        
+        // Step 3: Extract IDs from each subtitle page
+        for (const subPage of subtitlePages) {
+            const ids = await extractSubtitleIds(subPage.url);
+            
+            if (ids.length > 0) {
+                const { idid, altid } = ids[0];
+                const downloadUrl = `/download/${idid}-${altid}.srt`;
+                
+                subtitles.push({
+                    id: `${subPage.releaseName}.srt`,
+                    url: downloadUrl,
+                    lang: 'tur'
+                });
+                
+                console.log(`[Scraper] Added: ${subPage.releaseName} → ${downloadUrl}`);
+            }
+        }
+        
+        console.log(`[Scraper] Total found: ${subtitles.length} subtitles`);
+        return subtitles;
         
     } catch (error) {
-        console.error(`[API] Preview error: ${error.message}`);
-        res.status(500).json({ error: error.message });
+        console.error(`[Scraper] Error: ${error.message}`);
+        return [];
     }
-});
+}
 
 /**
- * Cache stats (for debugging)
+ * Download and extract subtitle file
  */
-app.get('/cache/stats', (req, res) => {
-    res.json({
-        keys: cache.keys().length,
-        stats: cache.getStats()
-    });
-});
-
-/**
- * Clear cache
- */
-app.get('/cache/clear', (req, res) => {
-    cache.flushAll();
-    res.json({ message: 'Cache cleared' });
-});
-
-/**
- * Test Turkish character encoding
- */
-app.get('/test/encoding', (req, res) => {
-    const testText = `
-Test Türkçe Karakterler:
-- Normal: çğıöşüÇĞİÖŞÜ
-- Bozuk: Ã§ÄŸÄ±Ã¶Å\u009fÃ¼Ã\u0087Ä\u009eÄ°Ã\u0096Å\u009eÃ\u009c
-- Kelimeler: GÄ°RÄ°Å\u009f, KonuÅ\u009fabilir, MÃ¼rettebat, BÃ¶yle
-`;
+function extractSrt(buffer) {
+    console.log(`[Encoding] Buffer boyutu: ${buffer.length}, İlk 4 byte: [${buffer.slice(0, 4).join(', ')}]`);
     
-    res.set({
-        'Content-Type': 'text/plain; charset=utf-8',
-        'Access-Control-Allow-Origin': '*'
-    });
+    // ZIP mi kontrol et
+    const isZip = buffer[0] === 0x50 && buffer[1] === 0x4B;
+    if (isZip) {
+        try {
+            console.log(`[Encoding] ZIP dosyası tespit edildi`);
+            const zip = new AdmZip(buffer);
+            const entry = zip.getEntries().find(e => e.entryName.endsWith('.srt'));
+            if (entry) {
+                const srtBuffer = entry.getData();
+                console.log(`[Encoding] ZIP içinden SRT çıkarıldı: ${srtBuffer.length} bytes`);
+                return decodeWithMultipleEncodings(srtBuffer);
+            }
+        } catch (err) {
+            console.warn('ZIP açma hatası:', err.message);
+        }
+    }
     
-    res.send(testText);
-});
+    // ZIP değilse direkt decode
+    return decodeWithMultipleEncodings(buffer);
+}
 
-// 404 handler
-app.use((req, res) => {
-    res.status(404).json({ error: 'Not found' });
-});
+function decodeWithMultipleEncodings(buffer) {
+    // Türkçe karakterler için deneme sırası
+    const encodings = [
+        'windows-1254',  // Türkçe Windows
+        'iso-8859-9',    // Latin-5 (Türkçe)
+        'utf-8',         // UTF-8
+        'cp1254',        // Code Page 1254
+        'latin1'         // Son çare
+    ];
+    
+    for (const encoding of encodings) {
+        try {
+            const decoded = iconv.decode(buffer, encoding);
+            
+            // Türkçe karakter kontrolü - doğru decode edilmiş mi?
+            const turkishChars = /[çğıöşüÇĞİÖŞÜ]/;
+            const hasValidTurkish = turkishChars.test(decoded);
+            
+            // Bozuk karakter kontrolü
+            const hasBrokenChars = /[ÄÄ°Ã¼Ã§Ä±Å\u00ff\u00fe\u00fd]/g.test(decoded);
+            
+            console.log(`[Encoding] ${encoding} denendi - Türkçe: ${hasValidTurkish}, Bozuk: ${hasBrokenChars}`);
+            
+            if (hasValidTurkish && !hasBrokenChars) {
+                console.log(`[Encoding] ✅ Başarılı encoding: ${encoding}`);
+                return cleanupSubtitle(decoded);
+            }
+            
+            // Eğer bozuk karakterler varsa ama Türkçe karakterler de varsa, temizlemeyi dene
+            if (hasValidTurkish && hasBrokenChars) {
+                console.log(`[Encoding] ⚠️ ${encoding} ile kısmen başarılı, temizleniyor...`);
+                const cleaned = fixBrokenTurkishChars(decoded);
+                if (cleaned !== decoded) {
+                    console.log(`[Encoding] ✅ Temizleme başarılı: ${encoding}`);
+                    return cleanupSubtitle(cleaned);
+                }
+            }
+            
+        } catch (err) {
+            console.warn(`[Encoding] ${encoding} başarısız: ${err.message}`);
+        }
+    }
+    
+    // Hiçbiri işe yaramazsa, son çare olarak windows-1254 kullan
+    console.warn(`[Encoding] ⚠️ Tüm encoding'ler başarısız, windows-1254 zorlanıyor`);
+    try {
+        const fallback = iconv.decode(buffer, 'windows-1254');
+        return cleanupSubtitle(fixBrokenTurkishChars(fallback));
+    } catch (err) {
+        console.error(`[Encoding] ❌ Son çare de başarısız: ${err.message}`);
+        return buffer.toString('utf8'); // En son çare
+    }
+}
 
-// Error handler
-app.use((err, req, res, next) => {
-    console.error(`[Error] ${err.message}`);
-    res.status(500).json({ error: 'Internal server error' });
-});
+function fixBrokenTurkishChars(text) {
+    console.log(`[Fix] Karakter düzeltme başlıyor, metin uzunluğu: ${text.length}`);
+    
+    // Yaygın bozuk Türkçe karakter eşleştirmeleri (UTF-8 -> Windows-1254 çifte encoding sorunu)
+    const fixes = {
+        // Küçük harfler
+        'Ã§': 'ç',      // ç
+        'Ã¼': 'ü',      // ü
+        'Ä±': 'ı',      // ı
+        'Ã¶': 'ö',      // ö
+        'ÄŸ': 'ğ',      // ğ
+        'Å\u009f': 'ş', // ş
+        
+        // Büyük harfler
+        'Ä°': 'İ',      // İ
+        'Ã\u0087': 'Ç', // Ç
+        'Ã\u009c': 'Ü', // Ü
+        'Ã\u0096': 'Ö', // Ö
+        'Ä\u009e': 'Ğ', // Ğ
+        'Å\u009e': 'Ş', // Ş
+        
+        // Alternatif bozuk formlar
+        'Ã¢': 'â',
+        'Ã®': 'î',
+        'Ã´': 'ô',
+        'Ã»': 'û',
+        
+        // Özel durumlar (örneğinizdeki kelimeler)
+        'GÄ°RÄ°Å\u009f': 'GİRİŞ',
+        'GÄ°RÄ°Ş': 'GİRİŞ',
+        'KonuÅ\u009f': 'Konuş',
+        'KonuÅŸ': 'Konuş',
+        'kÄ±r': 'kır',
+        'MÃ¼rettebat': 'Mürettebat',
+        'aÃ§': 'aç',
+        'BÃ¶yle': 'Böyle',
+        'yakÄ±n': 'yakın',
+        'oyalanÄ±rsak': 'oyalanırsak',
+        'sÄ±kÄ±': 'sıkı',
+        'penÃ§esine': 'pençesine',
+        'alÄ±r': 'alır',
+        
+        // Daha genel pattern'ler
+        'Ä±Å\u009f': 'ış',
+        'Ä±r': 'ır',
+        'Ã¼n': 'ün',
+        'Ã¶r': 'ör',
+        'Ã§e': 'çe',
+        'ÄŸe': 'ğe',
+        'Å\u009fe': 'şe'
+    };
+    
+    let fixed = text;
+    let changeCount = 0;
+    
+    // İlk önce özel kelime düzeltmeleri
+    for (const [broken, correct] of Object.entries(fixes)) {
+        const beforeLength = fixed.length;
+        fixed = fixed.replace(new RegExp(broken, 'g'), correct);
+        if (fixed.length !== beforeLength || fixed !== text) {
+            changeCount++;
+        }
+    }
+    
+    // Daha genel karakter düzeltmeleri (regex pattern'ler)
+    const patterns = [
+        // Ä± -> ı (her yerde)
+        { pattern: /Ä±/g, replacement: 'ı' },
+        // Ä° -> İ (her yerde)  
+        { pattern: /Ä°/g, replacement: 'İ' },
+        // ÄŸ -> ğ (her yerde)
+        { pattern: /ÄŸ/g, replacement: 'ğ' },
+        // Ã§ -> ç (her yerde)
+        { pattern: /Ã§/g, replacement: 'ç' },
+        // Ã¼ -> ü (her yerde)
+        { pattern: /Ã¼/g, replacement: 'ü' },
+        // Ã¶ -> ö (her yerde)
+        { pattern: /Ã¶/g, replacement: 'ö' },
+        // Å\u009f -> ş (her yerde)
+        { pattern: /Å\u009f/g, replacement: 'ş' },
+        // Å\u009e -> Ş (her yerde)
+        { pattern: /Å\u009e/g, replacement: 'Ş' }
+    ];
+    
+    for (const {pattern, replacement} of patterns) {
+        const matches = fixed.match(pattern);
+        if (matches) {
+            fixed = fixed.replace(pattern, replacement);
+            changeCount += matches.length;
+        }
+    }
+    
+    console.log(`[Fix] ${changeCount} karakter düzeltmesi yapıldı`);
+    
+    // Son kontrol - hala bozuk karakterler var mı?
+    const stillBroken = /[ÄÃÅ][°±¼§¶\u009f\u009e\u0087\u009c\u0096]/g.test(fixed);
+    if (stillBroken) {
+        console.warn(`[Fix] ⚠️ Hala bozuk karakterler mevcut`);
+    } else {
+        console.log(`[Fix] ✅ Tüm karakterler düzeltildi`);
+    }
+    
+    return fixed;
+}
 
-// ÖNCE (sadece localhost):
-app.listen(PORT, () => {
-    console.log(`...`);
-});
+function cleanupSubtitle(text) {
+    // BOM kaldır
+    if (text.charCodeAt(0) === 0xFEFF) {
+        text = text.slice(1);
+    }
+    
+    // Satır sonlarını normalize et
+    text = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    
+    // Fazla boşlukları temizle
+    text = text.replace(/\n{3,}/g, '\n\n');
+    
+    return text.trim();
+}
 
-// SONRA (tüm network):
-app.listen(PORT, '0.0.0.0', () => {
-    console.log(`
-╔════════════════════════════════════════════╗
-║  Turkcealtyazi Subtitle Backend           ║
-║  Port: ${PORT}                            ║
-║  Local: http://localhost:${PORT}          ║
-║  Network: http://192.168.1.16:${PORT}     ║
-║  Status: Running ✓                         ║
-╚════════════════════════════════════════════╝
-    `);
-});
+// extractSrtSafe fonksiyonu kaldırıldı - kullanılmıyor ve fs dependency gerektiriyor
+
+
+// Kullanılmayan import'ları kaldırdık (fs, StreamZip, CookieJar, wrapper, https, url)
+// Render.com'da sadece proxy kullandığımız için bunlara ihtiyaç yok
+
+// ... (diğer fonksiyonlar)
+async function downloadSubtitleViaProxy(idid, altid) {
+    const SCRAPINGBEE_KEY = process.env.SCRAPINGBEE_API_KEY || "5ILBVRJ2DVDK8B9M1QVOGHLY9DQAWNOX9R7368205HXXGJWMS6CSYZSJ4CJKLF8MVB08F1NRQVSAOXF3";
+    const postData = `idid=${idid}&altid=${altid}`;
+    const targetUrl = 'https://turkcealtyazi.org/ind';
+
+    try {
+        console.log(`[Download via ScrapingBee] Subtitle indiriliyor: ${idid}-${altid}`);
+        
+        // ScrapingBee ile POST request - doğru format
+        const response = await axios.post("https://app.scrapingbee.com/api/v1/", postData, {
+            params: {
+                api_key: SCRAPINGBEE_KEY,
+                url: targetUrl,
+                render_js: false,
+                country_code: "tr",
+                premium_proxy: "true",
+                block_resources: "true",
+                // Forward headers
+                forward_headers: "true"
+            },
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'User-Agent': getRandomUserAgent(),
+                'Accept': '*/*',
+                'Accept-Language': 'tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7',
+                'Referer': 'https://turkcealtyazi.org/',
+                'Origin': 'https://turkcealtyazi.org',
+                'X-Target-Method': 'POST'
+            },
+            responseType: 'arraybuffer',
+            timeout: 45000
+        });
+
+        const buffer = Buffer.from(response.data);
+        console.log(`[Download via ScrapingBee] İndirilen buffer boyutu: ${buffer.byteLength}`);
+        console.log(`[Download via ScrapingBee] Response status: ${response.status}`);
+        
+        if (response.status !== 200) {
+            throw new Error(`ScrapingBee HTTP error: ${response.status}`);
+        }
+        
+        if (buffer.byteLength < 100) {
+            throw new Error(`Buffer çok küçük (${buffer.byteLength} bytes)`);
+        }
+        
+        const srtText = extractSrt(buffer);
+        
+        if (!srtText || srtText.length < 50) {
+            throw new Error(`SRT içeriği boş veya çok kısa (${srtText ? srtText.length : 0} chars)`);
+        }
+        
+        console.log(`[Download via ScrapingBee] ✅ Başarılı - SRT boyutu: ${srtText.length} chars`);
+        return srtText;
+
+    } catch (err) {
+        console.error('ScrapingBee ile indirme hatası:', err.message);
+        if (err.response) {
+            console.error('ScrapingBee response status:', err.response.status);
+            console.error('ScrapingBee response headers:', err.response.headers);
+        }
+        throw err;
+    }
+}
+
+async function downloadSubtitleViaAlternativeProxy(idid, altid) {
+    // Alternatif olarak ScraperAPI kullan (eğer key varsa)
+    const SCRAPER_API_KEY = process.env.SCRAPER_API_KEY || '54bd854e8155103b70fd5da4e233c51c';
+    const postData = `idid=${idid}&altid=${altid}`;
+    const targetUrl = 'https://turkcealtyazi.org/ind';
+
+    try {
+        console.log(`[Download via ScraperAPI] Alternatif proxy ile deneniyor: ${idid}-${altid}`);
+        
+        const response = await axios.post("http://api.scraperapi.com/", postData, {
+            params: {
+                api_key: SCRAPER_API_KEY,
+                url: targetUrl,
+                country_code: "tr",
+                premium: "true",
+                render: "false"
+            },
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'User-Agent': getRandomUserAgent(),
+                'Accept': '*/*',
+                'Accept-Language': 'tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7'
+            },
+            responseType: 'arraybuffer',
+            timeout: 30000
+        });
+
+        const buffer = Buffer.from(response.data);
+        console.log(`[Download via ScraperAPI] İndirilen buffer boyutu: ${buffer.byteLength}`);
+        
+        if (buffer.byteLength < 100) {
+            throw new Error(`Buffer çok küçük (${buffer.byteLength} bytes)`);
+        }
+        
+        const srtText = extractSrt(buffer);
+        
+        if (!srtText || srtText.length < 50) {
+            throw new Error(`SRT içeriği boş veya çok kısa`);
+        }
+        
+        console.log(`[Download via ScraperAPI] ✅ Alternatif başarılı - SRT boyutu: ${srtText.length} chars`);
+        return srtText;
+
+    } catch (err) {
+        console.error('ScraperAPI ile indirme hatası:', err.message);
+        throw err;
+    }
+}
+
+async function downloadSubtitle(idid, altid) {
+    // Render.com'da turkcealtyazi.org IP'leri engellendiği için sadece proxy kullan
+    console.log(`[Download] Render ortamında proxy zorunlu - ScrapingBee kullanılıyor: ${idid}-${altid}`);
+    
+    try {
+        return await downloadSubtitleViaProxy(idid, altid);
+    } catch (proxyErr) {
+        console.error('ScrapingBee proxy ile indirme başarısız:', proxyErr.message);
+        
+        // Alternatif proxy dene (eğer varsa)
+        console.log(`[Download] Alternatif proxy deneniyor...`);
+        try {
+            return await downloadSubtitleViaAlternativeProxy(idid, altid);
+        } catch (altErr) {
+            console.error('Alternatif proxy de başarısız:', altErr.message);
+            throw new Error(`Tüm proxy yöntemleri başarısız: ${proxyErr.message} | ${altErr.message}`);
+        }
+    }
+}
+// Helper: SRT veya ZIP içinden SRT çıkar
+
+module.exports = {
+    searchSubtitles,
+    downloadSubtitle
+};
