@@ -4,6 +4,7 @@ const cors = require('cors');
 const rateLimit = require('express-rate-limit');
 const NodeCache = require('node-cache');
 const { searchSubtitles, downloadSubtitle } = require('./scraper');
+const serverless = require('serverless-http'); // <-- eklendi
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -43,6 +44,16 @@ app.use((req, res, next) => {
     console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
     next();
 });
+app.use((req, res) => {
+    res.status(404).json({ error: 'Not found' });
+});
+
+// Error handler
+app.use((err, req, res, next) => {
+    console.error(`[Error] ${err.message}`);
+    res.status(500).json({ error: 'Internal server error' });
+});
+
 
 /**
  * Health check endpoint
@@ -267,6 +278,8 @@ app.use((err, req, res, next) => {
     console.error(`[Error] ${err.message}`);
     res.status(500).json({ error: 'Internal server error' });
 });
+module.exports = app; // <-- Vercel bazen default handler yerine bunu da kabul ediyor
 
-// Start server (Render.com için tek listen)
 
+
+module.exports.handler = serverless(app); 
