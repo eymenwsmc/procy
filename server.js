@@ -270,11 +270,12 @@ app.use((err, req, res, next) => {
 });
 
 // Vercel için export (serverless)
-if (process.env.NODE_ENV === 'production' && process.env.VERCEL) {
-    // Vercel serverless environment
+if (process.env.VERCEL || process.env.VERCEL_ENV) {
+    // Vercel serverless environment - export app
+    console.log('[Vercel] Exporting app for serverless deployment');
     module.exports = app;
 } else {
-    // Local development veya Render.com
+    // Local development veya Render.com - start server
     app.listen(PORT, '0.0.0.0', () => {
         console.log(`
 ╔════════════════════════════════════════════╗
