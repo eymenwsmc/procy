@@ -548,34 +548,46 @@ async function downloadSubtitleViaProxy(idid, altid) {
 }
 
 async function downloadSubtitleViaAlternativeProxy(idid, altid) {
-    // Alternatif olarak ScraperAPI kullan (eğer key varsa)
+    // ScraperAPI primary proxy olarak kullan
     const SCRAPER_API_KEY = process.env.SCRAPER_API_KEY || '54bd854e8155103b70fd5da4e233c51c';
     const postData = `idid=${idid}&altid=${altid}`;
     const targetUrl = 'https://turkcealtyazi.org/ind';
 
     try {
-        console.log(`[Download via ScraperAPI] Alternatif proxy ile deneniyor: ${idid}-${altid}`);
+        console.log(`[Download via ScraperAPI] Primary proxy ile indiriliyor: ${idid}-${altid}`);
         
-        const response = await axios.post("http://api.scraperapi.com/", postData, {
+        // ScraperAPI doğru format - GET request with POST data as body
+        const response = await axios({
+            method: 'POST',
+            url: 'http://api.scraperapi.com/',
             params: {
                 api_key: SCRAPER_API_KEY,
                 url: targetUrl,
-                country_code: "tr",
-                premium: "true",
-                render: "false"
+                country_code: 'tr',
+                premium: 'true',
+                render: 'false',
+                keep_headers: 'true'
             },
+            data: postData,
             headers: {
                 'Content-Type': 'application/x-www-form-urlencoded',
                 'User-Agent': getRandomUserAgent(),
                 'Accept': '*/*',
-                'Accept-Language': 'tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7'
+                'Accept-Language': 'tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7',
+                'Referer': 'https://turkcealtyazi.org/',
+                'Origin': 'https://turkcealtyazi.org'
             },
             responseType: 'arraybuffer',
-            timeout: 30000
+            timeout: 45000
         });
 
         const buffer = Buffer.from(response.data);
         console.log(`[Download via ScraperAPI] İndirilen buffer boyutu: ${buffer.byteLength}`);
+        console.log(`[Download via ScraperAPI] Response status: ${response.status}`);
+        
+        if (response.status !== 200) {
+            throw new Error(`ScraperAPI HTTP error: ${response.status}`);
+        }
         
         if (buffer.byteLength < 100) {
             throw new Error(`Buffer çok küçük (${buffer.byteLength} bytes)`);
@@ -584,34 +596,39 @@ async function downloadSubtitleViaAlternativeProxy(idid, altid) {
         const srtText = extractSrt(buffer);
         
         if (!srtText || srtText.length < 50) {
-            throw new Error(`SRT içeriği boş veya çok kısa`);
+            throw new Error(`SRT içeriği boş veya çok kısa (${srtText ? srtText.length : 0} chars)`);
         }
         
-        console.log(`[Download via ScraperAPI] ✅ Alternatif başarılı - SRT boyutu: ${srtText.length} chars`);
+        console.log(`[Download via ScraperAPI] ✅ Primary başarılı - SRT boyutu: ${srtText.length} chars`);
         return srtText;
 
     } catch (err) {
         console.error('ScraperAPI ile indirme hatası:', err.message);
+        if (err.response) {
+            console.error('ScraperAPI response status:', err.response.status);
+            console.error('ScraperAPI response headers:', err.response.headers);
+        }
         throw err;
     }
 }
 
 async function downloadSubtitle(idid, altid) {
-    // Render.com'da turkcealtyazi.org IP'leri engellendiği için sadece proxy kullan
-    console.log(`[Download] Render ortamında proxy zorunlu - ScrapingBee kullanılıyor: ${idid}-${altid}`);
+    // ScraperAPI'yi primary, ScrapingBee'yi fallback yap
+    console.log(`[Download] ScraperAPI primary olarak kullanılıyor: ${idid}-${altid}`);
     
     try {
-        return await downloadSubtitleViaProxy(idid, altid);
-    } catch (proxyErr) {
-        console.error('ScrapingBee proxy ile indirme başarısız:', proxyErr.message);
+        // Önce ScraperAPI dene
+        return await downloadSubtitleViaAlternativeProxy(idid, altid);
+    } catch (scraperApiErr) {
+        console.error('ScraperAPI ile indirme başarısız:', scraperApiErr.message);
         
-        // Alternatif proxy dene (eğer varsa)
-        console.log(`[Download] Alternatif proxy deneniyor...`);
+        // Fallback olarak ScrapingBee dene
+        console.log(`[Download] Fallback: ScrapingBee deneniyor...`);
         try {
-            return await downloadSubtitleViaAlternativeProxy(idid, altid);
-        } catch (altErr) {
-            console.error('Alternatif proxy de başarısız:', altErr.message);
-            throw new Error(`Tüm proxy yöntemleri başarısız: ${proxyErr.message} | ${altErr.message}`);
+            return await downloadSubtitleViaProxy(idid, altid);
+        } catch (scrapingBeeErr) {
+            console.error('ScrapingBee de başarısız:', scrapingBeeErr.message);
+            throw new Error(`Tüm proxy yöntemleri başarısız: ScraperAPI: ${scraperApiErr.message} | ScrapingBee: ${scrapingBeeErr.message}`);
         }
     }
 }
