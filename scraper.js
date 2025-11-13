@@ -17,6 +17,9 @@ const userAgents = [
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15'
 ];
 
+const SCRAPER_API_KEY = '54bd854e8155103b70fd5da4e233c51c';
+
+const { HttpsProxyAgent } = require('https-proxy-agent');
 const AdmZip = require('adm-zip');
 const iconv = require('iconv-lite');
 
@@ -152,7 +155,8 @@ async function scraperApiRequest(url, options = {}) {
                 url: url,
                 render: false,
                 country_code: "tr",
-                premium: "true"
+                ultra_premium: "true",
+                session_number: Math.floor(Math.random() * 1000)
             },
             headers: {
                 ...(options.headers || {}),
@@ -286,14 +290,32 @@ function extractSrt(buffer) {
         try {
             console.log(`[Encoding] ZIP dosyası tespit edildi`);
             const zip = new AdmZip(buffer);
-            const entry = zip.getEntries().find(e => e.entryName.endsWith('.srt'));
-            if (entry) {
-                const srtBuffer = entry.getData();
+            const entries = zip.getEntries();
+            
+            console.log(`[Encoding] ZIP içinde ${entries.length} dosya bulundu:`);
+            entries.forEach((entry, index) => {
+                console.log(`[Encoding] ${index + 1}. ${entry.entryName} (${entry.header.size} bytes)`);
+            });
+            
+            // SRT dosyasını bul
+            const srtEntry = entries.find(e => e.entryName.toLowerCase().endsWith('.srt'));
+            if (srtEntry) {
+                console.log(`[Encoding] SRT dosyası bulundu: ${srtEntry.entryName}`);
+                const srtBuffer = srtEntry.getData();
                 console.log(`[Encoding] ZIP içinden SRT çıkarıldı: ${srtBuffer.length} bytes`);
                 return decodeWithMultipleEncodings(srtBuffer);
+            } else {
+                console.warn(`[Encoding] ZIP içinde SRT dosyası bulunamadı!`);
+                // Eğer SRT yoksa, ilk dosyayı dene
+                if (entries.length > 0) {
+                    console.log(`[Encoding] İlk dosya deneniyor: ${entries[0].entryName}`);
+                    const firstBuffer = entries[0].getData();
+                    return decodeWithMultipleEncodings(firstBuffer);
+                }
             }
         } catch (err) {
             console.warn('ZIP açma hatası:', err.message);
+            console.warn('ZIP buffer ilk 50 byte:', buffer.slice(0, 50).toString('hex'));
         }
     }
     
@@ -547,34 +569,36 @@ async function downloadSubtitleViaProxy(idid, altid) {
 }
 
 async function downloadSubtitleViaAlternativeProxy(idid, altid) {
-    // ScraperAPI primary proxy olarak kullan
+    // ScraperAPI ile POST request
     const SCRAPER_API_KEY = process.env.SCRAPER_API_KEY || '54bd854e8155103b70fd5da4e233c51c';
+    console.log(`[Download via ScraperAPI] ScraperAPI ile indiriliyor: ${idid}-${altid}`);
+    
     const postData = `idid=${idid}&altid=${altid}`;
     const targetUrl = 'https://turkcealtyazi.org/ind';
 
     try {
-        console.log(`[Download via ScraperAPI] Primary proxy ile indiriliyor: ${idid}-${altid}`);
+        console.log(`[ScraperAPI] POST request gönderiliyor...`);
+        console.log(`[ScraperAPI] Target: ${targetUrl}`);
+        console.log(`[ScraperAPI] Data: ${postData}`);
+        console.log(`[ScraperAPI] API Key: ${SCRAPER_API_KEY.substring(0, 8)}...`);
         
-        // ScraperAPI doğru format - GET request with POST data as body
-        const response = await axios({
-            method: 'POST',
-            url: 'http://api.scraperapi.com/',
+        // ScraperAPI ile GET request - POST data URL'de
+        const fullUrl = `${targetUrl}?${postData}`;
+        console.log(`[ScraperAPI] Full URL: ${fullUrl}`);
+        
+        const response = await axios.get('http://api.scraperapi.com/', {
             params: {
                 api_key: SCRAPER_API_KEY,
-                url: targetUrl,
+                url: fullUrl,
                 country_code: 'tr',
-                premium: 'true',
+                ultra_premium: 'true',
                 render: 'false',
-                keep_headers: 'true'
+                session_number: Math.floor(Math.random() * 1000)
             },
-            data: postData,
             headers: {
-                'Content-Type': 'application/x-www-form-urlencoded',
                 'User-Agent': getRandomUserAgent(),
                 'Accept': '*/*',
-                'Accept-Language': 'tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7',
-                'Referer': 'https://turkcealtyazi.org/',
-                'Origin': 'https://turkcealtyazi.org'
+                'Accept-Language': 'tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7'
             },
             responseType: 'arraybuffer',
             timeout: 45000
@@ -598,38 +622,189 @@ async function downloadSubtitleViaAlternativeProxy(idid, altid) {
             throw new Error(`SRT içeriği boş veya çok kısa (${srtText ? srtText.length : 0} chars)`);
         }
         
-        console.log(`[Download via ScraperAPI] ✅ Primary başarılı - SRT boyutu: ${srtText.length} chars`);
+        console.log(`[Download via ScraperAPI] ✅ ScraperAPI başarılı - SRT boyutu: ${srtText.length} chars`);
         return srtText;
 
     } catch (err) {
         console.error('ScraperAPI ile indirme hatası:', err.message);
         if (err.response) {
             console.error('ScraperAPI response status:', err.response.status);
-            console.error('ScraperAPI response headers:', err.response.headers);
+            console.error('ScraperAPI response data:', err.response.data ? err.response.data.toString().substring(0, 200) : 'No data');
         }
-        throw err;
+        
+        throw new Error(`ScraperAPI başarısız: ${err.message}`);
+    }
+}
+
+async function downloadSubtitleViaWebShare(idid, altid) {
+    // WebShare.io ücretsiz proxy (1GB/ay)
+    console.log(`[Download via WebShare] WebShare proxy ile deneniyor: ${idid}-${altid}`);
+    
+    const postData = `idid=${idid}&altid=${altid}`;
+    const targetUrl = 'https://turkcealtyazi.org/ind';
+
+    try {
+        // WebShare ücretsiz endpoint'i
+        const response = await axios.post('https://proxy.webshare.io/api/v2/proxy/list/', null, {
+            headers: {
+                'Authorization': 'Token xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx' // Ücretsiz token
+            },
+            timeout: 10000
+        });
+
+        // Fallback: Direkt CORS proxy dene
+        console.log(`[WebShare] CORS proxy deneniyor...`);
+        
+        const corsResponse = await axios.post(`https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}`, postData, {
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'User-Agent': getRandomUserAgent(),
+                'Accept': '*/*'
+            },
+            responseType: 'arraybuffer',
+            timeout: 30000
+        });
+
+        const buffer = Buffer.from(corsResponse.data);
+        console.log(`[Download via WebShare] Buffer boyutu: ${buffer.byteLength}`);
+        
+        if (buffer.byteLength < 100) {
+            throw new Error(`Buffer çok küçük: ${buffer.byteLength} bytes`);
+        }
+        
+        const srtText = extractSrt(buffer);
+        
+        if (!srtText || srtText.length < 50) {
+            throw new Error(`SRT içeriği boş veya çok kısa`);
+        }
+        
+        console.log(`[Download via WebShare] ✅ CORS proxy başarılı - SRT boyutu: ${srtText.length} chars`);
+        return srtText;
+
+    } catch (err) {
+        console.error('WebShare proxy ile indirme hatası:', err.message);
+        throw new Error(`WebShare proxy başarısız: ${err.message}`);
+    }
+}
+
+async function downloadSubtitleViaZenRows(idid, altid) {
+    // ZenRows ücretsiz scraping API (1000 request/ay)
+    console.log(`[Download via ZenRows] ZenRows ile deneniyor: ${idid}-${altid}`);
+    
+    const postData = `idid=${idid}&altid=${altid}`;
+    const targetUrl = 'https://turkcealtyazi.org/ind';
+
+    try {
+        // ZenRows ücretsiz API
+        const ZENROWS_API_KEY = process.env.ZENROWS_API_KEY || 'ba2154ab98c0edafda0f44451780179b4ed519a3';
+        
+        console.log(`[ZenRows] API Key: ${ZENROWS_API_KEY.substring(0, 8)}...`);
+        console.log(`[ZenRows] Target: ${targetUrl}`);
+        console.log(`[ZenRows] POST Data: ${postData}`);
+        
+        const response = await axios.post('https://api.zenrows.com/v1/', postData, {
+            params: {
+                url: targetUrl,
+                apikey: ZENROWS_API_KEY,
+                js_render: 'false',
+                premium_proxy: 'true',
+                proxy_country: 'tr'
+            },
+            data: postData,
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded'
+            },
+            responseType: 'arraybuffer',
+            timeout: 30000
+        });
+
+        const buffer = Buffer.from(response.data);
+        console.log(`[Download via ZenRows] Buffer boyutu: ${buffer.byteLength}`);
+        
+        const srtText = extractSrt(buffer);
+        
+        if (!srtText || srtText.length < 50) {
+            throw new Error(`SRT içeriği boş veya çok kısa`);
+        }
+        
+        console.log(`[Download via ZenRows] ✅ ZenRows başarılı - SRT boyutu: ${srtText.length} chars`);
+        return srtText;
+
+    } catch (err) {
+        console.error('ZenRows ile indirme hatası:', err.message);
+        throw new Error(`ZenRows başarısız: ${err.message}`);
+    }
+}
+
+async function downloadSubtitleViaScrapfly(idid, altid) {
+    // Scrapfly ücretsiz API (1000 request/ay)
+    console.log(`[Download via Scrapfly] Scrapfly ile deneniyor: ${idid}-${altid}`);
+    
+    const postData = `idid=${idid}&altid=${altid}`;
+    const targetUrl = 'https://turkcealtyazi.org/ind';
+
+    try {
+        // Scrapfly POST request
+        const response = await axios.post('https://api.scrapfly.io/scrape', null, {
+            params: {
+                key: 'your-free-scrapfly-key', // Ücretsiz key gerekli
+                url: targetUrl,
+                country: 'TR',
+                render_js: 'false',
+                asp: 'true'
+            },
+            data: postData,
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded'
+            },
+            responseType: 'arraybuffer',
+            timeout: 30000
+        });
+
+        const buffer = Buffer.from(response.data);
+        console.log(`[Download via Scrapfly] Buffer boyutu: ${buffer.byteLength}`);
+        
+        const srtText = extractSrt(buffer);
+        
+        if (!srtText || srtText.length < 50) {
+            throw new Error(`SRT içeriği boş veya çok kısa`);
+        }
+        
+        console.log(`[Download via Scrapfly] ✅ Scrapfly başarılı - SRT boyutu: ${srtText.length} chars`);
+        return srtText;
+
+    } catch (err) {
+        console.error('Scrapfly ile indirme hatası:', err.message);
+        throw new Error(`Scrapfly başarısız: ${err.message}`);
     }
 }
 
 async function downloadSubtitle(idid, altid) {
-    // ScraperAPI'yi primary, ScrapingBee'yi fallback yap
-    console.log(`[Download] ScraperAPI primary olarak kullanılıyor: ${idid}-${altid}`);
+    // Çoklu fallback stratejisi
+    console.log(`[Download] Çoklu proxy stratejisi başlatılıyor: ${idid}-${altid}`);
     
-    try {
-        // Önce ScraperAPI dene
-        return await downloadSubtitleViaAlternativeProxy(idid, altid);
-    } catch (scraperApiErr) {
-        console.error('ScraperAPI ile indirme başarısız:', scraperApiErr.message);
-        
-        // Fallback olarak ScrapingBee dene
-        console.log(`[Download] Fallback: ScrapingBee deneniyor...`);
+    const methods = [
+        { name: 'ZenRows', func: downloadSubtitleViaZenRows },
+        { name: 'ScraperAPI', func: downloadSubtitleViaAlternativeProxy },
+        { name: 'WebShare/CORS', func: downloadSubtitleViaWebShare },
+        { name: 'Scrapfly', func: downloadSubtitleViaScrapfly }
+    ];
+    
+    const errors = [];
+    
+    for (const method of methods) {
         try {
-            return await downloadSubtitleViaProxy(idid, altid);
-        } catch (scrapingBeeErr) {
-            console.error('ScrapingBee de başarısız:', scrapingBeeErr.message);
-            throw new Error(`Tüm proxy yöntemleri başarısız: ScraperAPI: ${scraperApiErr.message} | ScrapingBee: ${scrapingBeeErr.message}`);
+            console.log(`[Download] ${method.name} deneniyor...`);
+            return await method.func(idid, altid);
+        } catch (err) {
+            console.error(`${method.name} başarısız:`, err.message);
+            errors.push(`${method.name}: ${err.message}`);
         }
     }
+    
+    // Tüm yöntemler başarısız
+    console.error(`[Download] ❌ Tüm proxy servisleri başarısız`);
+    throw new Error(`Tüm indirme yöntemleri başarısız: ${errors.join(' | ')}`);
 }
 // Helper: SRT veya ZIP içinden SRT çıkar
 
