@@ -6,16 +6,31 @@ const NodeCache = require('node-cache');
 const { searchSubtitles, downloadSubtitle } = require('./scraper');
 
 const app = express();
-const PORT = process.env.PORT || 80;
+const PORT = process.env.PORT || 3000;
+
+// Trust proxy - Vercel için ZORUNLU
+app.set('trust proxy', true);
 
 // Enable CORS
 app.use(cors());
 
-// Rate limiting
+// Rate limiting - Simplified for Vercel
 const limiter = rateLimit({
-    windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 50, // Max 50 requests per IP
-    message: { error: 'Too many requests, please try again later.' }
+    windowMs: 15 * 60 * 1000,
+    max: 100,
+    message: { error: 'Too many requests, please try again later.' },
+    standardHeaders: true,
+    legacyHeaders: false,
+    // Vercel için: X-Forwarded-For header'ı kullan
+    keyGenerator: (req) => {
+        return req.headers['x-forwarded-for']?.split(',')[0] || 
+               req.headers['x-real-ip'] || 
+               req.ip || 
+               'unknown';
+    },
+    skip: (req) => {
+        return req.path === '/' || req.path === '/manifest.json' || req.path === '/cache/stats';
+    }
 });
 
 app.use(limiter);
@@ -84,23 +99,43 @@ app.get('/subtitles/:type/:imdbId.json', async (req, res) => {
         
         // Search subtitles
         console.log(`[API] Searching: ${type} ${cleanImdbId} S${season}E${episode}`);
-        const subtitles = await searchSubtitles(cleanImdbId, type, season, episode);
         
-        const response = {
-            subtitles: subtitles,
-            cacheMaxAge: 4 * 60 * 60, // 4 hours
-            staleRevalidate: 4 * 60 * 60,
-            staleError: 7 * 24 * 60 * 60
-        };
-        
-        // Cache the response
-        if (subtitles.length > 0) {
-            cache.set(cacheKey, response, 15 * 60); // 15 minutes
-        } else {
-            cache.set(cacheKey, response, 2 * 60); // 2 minutes for empty results
+        try {
+            const subtitles = await searchSubtitles(cleanImdbId, type, season, episode);
+            
+            const response = {
+                subtitles: subtitles,
+                cacheMaxAge: 4 * 60 * 60, // 4 hours
+                staleRevalidate: 4 * 60 * 60,
+                staleError: 7 * 24 * 60 * 60
+            };
+            
+            // Cache the response
+            if (subtitles.length > 0) {
+                cache.set(cacheKey, response, 15 * 60); // 15 minutes
+            } else {
+                cache.set(cacheKey, response, 2 * 60); // 2 minutes for empty results
+            }
+            
+            res.json(response);
+        } catch (searchError) {
+            console.error(`[API] Search error: ${searchError.message}`);
+            
+            // Return empty but valid response
+            const fallbackResponse = {
+                subtitles: [],
+                error: 'Service temporarily unavailable - blocked by upstream',
+                message: 'Turkcealtyazi.org may be blocking requests. Try again later.',
+                cacheMaxAge: 60, // 1 minute
+                staleRevalidate: 60,
+                staleError: 60
+            };
+            
+            // Cache empty response briefly
+            cache.set(cacheKey, fallbackResponse, 60); // 1 minute
+            
+            res.json(fallbackResponse);
         }
-        
-        res.json(response);
         
     } catch (error) {
         console.error(`[API] Error: ${error.message}`);
@@ -131,6 +166,7 @@ app.get('/download/:idid-:altid.srt', async (req, res) => {
         console.log(`[API] ✅ Subtitle ready - Length: ${subtitleText.length} chars`);
         console.log(`[API] 📝 First 200 chars: ${subtitleText.substring(0, 200)}`);
         console.log(`[API] 🔤 Contains Turkish chars: ${/[çğıöşüÇĞİÖŞÜ]/.test(subtitleText)}`);
+        console.log(`[API] ⚠️ Contains broken chars: ${/[ÄÃÅ][°±¼§¶\u009f\u009e\u0087\u009c\u0096]/.test(subtitleText)}`);
         
         res.set({
             'Content-Type': 'text/plain; charset=utf-8',
@@ -202,6 +238,25 @@ app.get('/cache/clear', (req, res) => {
     res.json({ message: 'Cache cleared' });
 });
 
+/**
+ * Test Turkish character encoding
+ */
+app.get('/test/encoding', (req, res) => {
+    const testText = `
+Test Türkçe Karakterler:
+- Normal: çğıöşüÇĞİÖŞÜ
+- Bozuk: Ã§ÄŸÄ±Ã¶Å\u009fÃ¼Ã\u0087Ä\u009eÄ°Ã\u0096Å\u009eÃ\u009c
+- Kelimeler: GÄ°RÄ°Å\u009f, KonuÅ\u009fabilir, MÃ¼rettebat, BÃ¶yle
+`;
+    
+    res.set({
+        'Content-Type': 'text/plain; charset=utf-8',
+        'Access-Control-Allow-Origin': '*'
+    });
+    
+    res.send(testText);
+});
+
 // 404 handler
 app.use((req, res) => {
     res.status(404).json({ error: 'Not found' });
@@ -213,10 +268,14 @@ app.use((err, req, res, next) => {
     res.status(500).json({ error: 'Internal server error' });
 });
 
-app.listen(PORT, () => {
-  console.log(`✅ Server running on port ${PORT}`);
+// Start server (Render.com için tek listen)
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`
+╔════════════════════════════════════════════╗
+║  Turkcealtyazi Subtitle Backend           ║
+║  Port: ${PORT}                            ║
+║  Environment: ${process.env.NODE_ENV || 'development'} ║
+║  Status: Running ✓                         ║
+╚════════════════════════════════════════════╝
+    `);
 });
-
-
-// ÖNCE (sadece localhost):
-module.exports = app;
