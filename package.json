@@ -33,7 +33,9 @@
     "iconv-lite": "^0.6.3",
     "node-stream-zip": "^1.15.0",
      "tough-cookie": "^4.1.4",
-"axios-cookiejar-support": "^6.0.4"
+"axios-cookiejar-support": "^6.0.4",
+       "serverless-http": "^3.0.1"
+
 },
   "devDependencies": {
     "nodemon": "^3.0.2"
