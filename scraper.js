@@ -169,32 +169,44 @@ async function extractSubtitleIds(subtitlePageUrl) {
 
 
 async function scraperApiRequest(url, options = {}) {
+    const SCRAPINGBEE_KEY = "5ILBVRJ2DVDK8B9M1QVOGHLY9DQAWNOX9R7368205HXXGJWMS6CSYZSJ4CJKLF8MVB08F1NRQVSAOXF3";
     try {
-        if (SCRAPER_API_KEY) {
-            // ScraperAPI üzerinden GET isteği
-            const response = await axios.get('https://api.scraperapi.com', {
-                params: {
-                    api_key: SCRAPER_API_KEY,
-                    url: url
-                },
-                headers: options.headers || {},
-                timeout: options.timeout || 15000,
-                responseType: 'text'
-            });
-            // Cheerio için string dönüşümü
-            response.data = response.data.toString('utf8');
-            return response;
-        } else {
-            // Direkt normal GET
-            const response = await axios.get(url, options);
-            response.data = response.data.toString('utf8');
-            return response;
+        console.log(`[ScrapingBee] Requesting: ${url}`);
+
+        const response = await axios.get("https://app.scrapingbee.com/api/v1/", {
+            params: {
+                api_key: SCRAPINGBEE_KEY,
+                url: url,
+                render_js: false,
+                country_code: "tr", // Türkiye IP’leri bazen daha stabil
+                premium_proxy: "true"
+            },
+            headers: {
+                ...(options.headers || {}),
+                "User-Agent": getRandomUserAgent(),
+                "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+            },
+            timeout: options.timeout || 20000,
+            responseType: "text"
+        });
+
+        if (!response.data) {
+            throw new Error("Boş yanıt alındı (ScrapingBee)");
         }
+
+        response.data = response.data.toString("utf8");
+        return response;
+
     } catch (err) {
-        console.error(`[ScraperAPI] Error: ${err.message}`);
+        console.error(`[ScrapingBee] Error: ${err.message}`);
+        if (err.response) {
+            console.error(`[ScrapingBee] Status: ${err.response.status}`);
+        }
         throw err;
     }
 }
+
 
 
  
