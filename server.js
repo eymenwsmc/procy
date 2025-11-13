@@ -4,7 +4,7 @@ const cors = require('cors');
 const rateLimit = require('express-rate-limit');
 const NodeCache = require('node-cache');
 const { searchSubtitles, downloadSubtitle } = require('./scraper');
-const serverless = require('serverless-http'); // <-- eklendi
+
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -44,16 +44,6 @@ app.use((req, res, next) => {
     console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
     next();
 });
-app.use((req, res) => {
-    res.status(404).json({ error: 'Not found' });
-});
-
-// Error handler
-app.use((err, req, res, next) => {
-    console.error(`[Error] ${err.message}`);
-    res.status(500).json({ error: 'Internal server error' });
-});
-
 
 /**
  * Health check endpoint
@@ -278,8 +268,21 @@ app.use((err, req, res, next) => {
     console.error(`[Error] ${err.message}`);
     res.status(500).json({ error: 'Internal server error' });
 });
-module.exports = app; // <-- Vercel bazen default handler yerine bunu da kabul ediyor
 
-
-
-module.exports.handler = serverless(app); 
+// Vercel için export (serverless)
+if (process.env.NODE_ENV === 'production' && process.env.VERCEL) {
+    // Vercel serverless environment
+    module.exports = app;
+} else {
+    // Local development veya Render.com
+    app.listen(PORT, '0.0.0.0', () => {
+        console.log(`
+╔════════════════════════════════════════════╗
+║  Turkcealtyazi Subtitle Backend           ║
+║  Port: ${PORT}                            ║
+║  Environment: ${process.env.NODE_ENV || 'development'} ║
+║  Status: Running ✓                         ║
+╚════════════════════════════════════════════╝
+        `);
+    });
+}
