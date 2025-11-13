@@ -142,17 +142,17 @@ async function extractSubtitleIds(subtitlePageUrl) {
 
 
 async function scraperApiRequest(url, options = {}) {
-    const SCRAPINGBEE_KEY = "5ILBVRJ2DVDK8B9M1QVOGHLY9DQAWNOX9R7368205HXXGJWMS6CSYZSJ4CJKLF8MVB08F1NRQVSAOXF3";
+    const SCRAPER_API_KEY = process.env.SCRAPER_API_KEY || '54bd854e8155103b70fd5da4e233c51c';
     try {
-        console.log(`[ScrapingBee] Requesting: ${url}`);
+        console.log(`[ScraperAPI] Requesting: ${url}`);
 
-        const response = await axios.get("https://app.scrapingbee.com/api/v1/", {
+        const response = await axios.get("http://api.scraperapi.com/", {
             params: {
-                api_key: SCRAPINGBEE_KEY,
+                api_key: SCRAPER_API_KEY,
                 url: url,
-                render_js: false,
-                country_code: "tr", // Türkiye IP’leri bazen daha stabil
-                premium_proxy: "true"
+                render: false,
+                country_code: "tr",
+                premium: "true"
             },
             headers: {
                 ...(options.headers || {}),
@@ -160,21 +160,20 @@ async function scraperApiRequest(url, options = {}) {
                 "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
             },
-            timeout: options.timeout || 20000,
+            timeout: options.timeout || 30000,
             responseType: "text"
         });
 
         if (!response.data) {
-            throw new Error("Boş yanıt alındı (ScrapingBee)");
+            throw new Error("Boş yanıt alındı (ScraperAPI)");
         }
 
-        response.data = response.data.toString("utf8");
         return response;
 
     } catch (err) {
-        console.error(`[ScrapingBee] Error: ${err.message}`);
+        console.error(`[ScraperAPI] Error: ${err.message}`);
         if (err.response) {
-            console.error(`[ScrapingBee] Status: ${err.response.status}`);
+            console.error(`[ScraperAPI] Status: ${err.response.status}`);
         }
         throw err;
     }
