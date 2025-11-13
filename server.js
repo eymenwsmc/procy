@@ -269,13 +269,4 @@ app.use((err, req, res, next) => {
 });
 
 // Start server (Render.com için tek listen)
-app.listen(PORT, '0.0.0.0', () => {
-    console.log(`
-╔════════════════════════════════════════════╗
-║  Turkcealtyazi Subtitle Backend           ║
-║  Port: ${PORT}                            ║
-║  Environment: ${process.env.NODE_ENV || 'development'} ║
-║  Status: Running ✓                         ║
-╚════════════════════════════════════════════╝
-    `);
-});
+
