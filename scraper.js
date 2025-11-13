@@ -411,52 +411,60 @@ const client = wrapper(axios.create({
 const https = require('https');
 const url = require('url'); // Gerekirse URL parsing için
 
+const SCRAPINGBEE_KEY = "5ILBVRJ2DVDK8B9M1QVOGHLY9DQAWNOX9R7368205HXXGJWMS6CSYZSJ4CJKLF8MVB08F1NRQVSAOXF3";
+
 // ... (diğer fonksiyonlar)
-async function downloadSubtitle(idid, altid) {
-    const postData = `idid=${idid}&altid=${altid}`;
-    const targetUrl = 'https://turkcealtyazi.org/ind';
+async function downloadSubtitle(subId) {
+  const filmPage = `https://turkcealtyazi.org/sub/${subId}.html`;
+  const downloadUrl = `https://turkcealtyazi.org/download.php?id=${subId}`;
 
-    try {
-        console.log(`[Download via Client] Subtitle indiriliyor: ${idid}-${altid}`);
-        
-        // Bu istek, önceki GET isteklerinde toplanan çerezleri otomatik olarak gönderecek.
-        const response = await client.post(targetUrl, postData, {
-            headers: {
-                'User-Agent': getRandomUserAgent(), 
-                'Content-Type': 'application/x-www-form-urlencoded',
-                'Referer': 'https://turkcealtyazi.org/',
-                // Sitenin isteyebileceği ek başlıklar
-                'X-Requested-With': 'XMLHttpRequest', // AJAX isteği taklidi
-                'Connection': 'keep-alive',
-            },
-            
-            // Veri tipini Buffer olarak almalıyız
-            responseType: 'arraybuffer', 
-            timeout: 40000
-        });
+  console.log("[ScrapingBee] 🎬 Film sayfasına gidiliyor:", filmPage);
 
-        const buffer = Buffer.from(response.data);
-        console.log(`[Download via Client] İndirilen ham buffer boyutu: ${buffer.byteLength}`);
+  // 1️⃣ Film sayfasına gir (cookie al)
+  const view = await axios.get("https://app.scrapingbee.com/api/v1/", {
+    params: {
+      api_key: SCRAPINGBEE_KEY,
+      url: filmPage,
+      cookies: "true",
+      render_js: false,
+      country_code: "tr",
+      premium_proxy: "true"
+    },
+    headers: {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+      "Accept-Language": "tr-TR,tr;q=0.9"
+    },
+  });
 
-        if (response.status === 403 || buffer.byteLength < 500) {
-            throw new Error(`Download failed with status: ${response.status} or tiny buffer.`);
-        }
-        
-        // Karakter kodlama çözümü (Recode Mantığı)
-        // extractSrt(buffer) fonksiyonunuzun içinde bu mantık KESİNLİKLE olmalı:
-        /*
-        const faultyString = iconv.decode(buffer, 'latin1'); 
-        const correctedBuffer = iconv.encode(faultyString, 'windows-1254');
-        return iconv.decode(correctedBuffer, 'utf8');
-        */
-        const srtText = extractSrt(buffer); 
-        return srtText;
+  const setCookie = view.headers["set-cookie"];
+  const cookieHeader = Array.isArray(setCookie) ? setCookie.join("; ") : "";
 
-    } catch (err) {
-        console.error('Subtitle indirilemedi (Çerez ile):', err.message);
-        throw err;
-    }
+  console.log("[ScrapingBee] 🍪 Cookie alındı:", cookieHeader ? "Evet" : "Hayır");
+
+  // 2️⃣ Cookie ve referer ile indirme isteği
+  console.log("[ScrapingBee] 📥 İndirme başlatılıyor:", downloadUrl);
+  const res = await axios.get("https://app.scrapingbee.com/api/v1/", {
+    params: {
+      api_key: SCRAPINGBEE_KEY,
+      url: downloadUrl,
+      cookies: "true",
+      render_js: false,
+      country_code: "tr",
+      premium_proxy: "true"
+    },
+    headers: {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+      "Referer": filmPage,
+      "Accept": "*/*",
+      "Cookie": cookieHeader
+    },
+    responseType: "arraybuffer"
+  });
+
+  console.log("✅ Başarılı! Boyut:", res.data.length, "byte");
+  return res.data;
 }
+
 // Helper: SRT veya ZIP içinden SRT çıkar
 
 module.exports = {
