@@ -145,18 +145,21 @@ async function extractSubtitleIds(subtitlePageUrl) {
 
 
 async function scraperApiRequest(url, options = {}) {
+    // ZenRows primary, ScraperAPI fallback
+    const ZENROWS_API_KEY = process.env.ZENROWS_API_KEY || 'ba2154ab98c0edafda0f44451780179b4ed519a3';
     const SCRAPER_API_KEY = process.env.SCRAPER_API_KEY || '54bd854e8155103b70fd5da4e233c51c';
+    
     try {
-        console.log(`[ScraperAPI] Requesting: ${url}`);
+        console.log(`[ZenRows Search] Requesting: ${url}`);
 
-        const response = await axios.get("http://api.scraperapi.com/", {
+        // ZenRows ile GET request
+        const response = await axios.get("https://api.zenrows.com/v1/", {
             params: {
-                api_key: SCRAPER_API_KEY,
                 url: url,
-                render: false,
-                country_code: "tr",
-                ultra_premium: "true",
-                session_number: Math.floor(Math.random() * 1000)
+                apikey: ZENROWS_API_KEY,
+                js_render: 'false',
+                premium_proxy: 'true',
+                proxy_country: 'tr'
             },
             headers: {
                 ...(options.headers || {}),
@@ -169,17 +172,48 @@ async function scraperApiRequest(url, options = {}) {
         });
 
         if (!response.data) {
-            throw new Error("Boş yanıt alındı (ScraperAPI)");
+            throw new Error("Boş yanıt alındı (ZenRows)");
         }
 
+        console.log(`[ZenRows Search] ✅ Başarılı - Response length: ${response.data.length}`);
         return response;
 
-    } catch (err) {
-        console.error(`[ScraperAPI] Error: ${err.message}`);
-        if (err.response) {
-            console.error(`[ScraperAPI] Status: ${err.response.status}`);
+    } catch (zenrowsErr) {
+        console.error(`[ZenRows Search] Error: ${zenrowsErr.message}`);
+        
+        // Fallback: ScraperAPI dene
+        console.log(`[Search Fallback] ScraperAPI deneniyor...`);
+        try {
+            const response = await axios.get("http://api.scraperapi.com/", {
+                params: {
+                    api_key: SCRAPER_API_KEY,
+                    url: url,
+                    render: false,
+                    country_code: "tr",
+                    ultra_premium: "true",
+                    session_number: Math.floor(Math.random() * 1000)
+                },
+                headers: {
+                    ...(options.headers || {}),
+                    "User-Agent": getRandomUserAgent(),
+                    "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+                },
+                timeout: options.timeout || 30000,
+                responseType: "text"
+            });
+
+            if (!response.data) {
+                throw new Error("Boş yanıt alındı (ScraperAPI)");
+            }
+
+            console.log(`[ScraperAPI Search] ✅ Fallback başarılı - Response length: ${response.data.length}`);
+            return response;
+
+        } catch (scraperErr) {
+            console.error(`[ScraperAPI Search] Fallback error: ${scraperErr.message}`);
+            throw new Error(`Tüm search proxy'leri başarısız: ZenRows: ${zenrowsErr.message} | ScraperAPI: ${scraperErr.message}`);
         }
-        throw err;
     }
 }
 
