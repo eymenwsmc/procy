@@ -670,39 +670,37 @@ async function downloadSubtitleViaAlternativeProxy(idid, altid) {
     }
 }
 
-async function downloadSubtitleViaCloudflareProxy(idid, altid) {
-    // Kendi Cloudflare Workers proxy'i
-    console.log(`[Download via CF Proxy] Cloudflare Workers proxy ile deneniyor: ${idid}-${altid}`);
+async function downloadSubtitleViaWebShare(idid, altid) {
+    // WebShare.io ücretsiz proxy (1GB/ay)
+    console.log(`[Download via WebShare] WebShare proxy ile deneniyor: ${idid}-${altid}`);
     
     const postData = `idid=${idid}&altid=${altid}`;
     const targetUrl = 'https://turkcealtyazi.org/ind';
-    const proxyUrl = 'https://proxy.demezeydemez.workers.dev/';
 
     try {
-        console.log(`[CF Proxy] Target: ${targetUrl}`);
-        console.log(`[CF Proxy] POST Data: ${postData}`);
+        // WebShare ücretsiz endpoint'i
+        const response = await axios.post('https://proxy.webshare.io/api/v2/proxy/list/', null, {
+            headers: {
+                'Authorization': 'Token xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx' // Ücretsiz token
+            },
+            timeout: 10000
+        });
+
+        // Fallback: Direkt CORS proxy dene
+        console.log(`[WebShare] CORS proxy deneniyor...`);
         
-        // Cloudflare Workers proxy ile POST request
-        const response = await axios.post(`${proxyUrl}?url=${encodeURIComponent(targetUrl)}`, postData, {
+        const corsResponse = await axios.post(`https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}`, postData, {
             headers: {
                 'Content-Type': 'application/x-www-form-urlencoded',
                 'User-Agent': getRandomUserAgent(),
-                'Accept': '*/*',
-                'Accept-Language': 'tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7',
-                'Referer': 'https://turkcealtyazi.org/',
-                'Origin': 'https://turkcealtyazi.org'
+                'Accept': '*/*'
             },
             responseType: 'arraybuffer',
             timeout: 30000
         });
 
-        const buffer = Buffer.from(response.data);
-        console.log(`[Download via CF Proxy] Buffer boyutu: ${buffer.byteLength}`);
-        console.log(`[Download via CF Proxy] Response status: ${response.status}`);
-        
-        if (response.status !== 200) {
-            throw new Error(`CF Proxy HTTP error: ${response.status}`);
-        }
+        const buffer = Buffer.from(corsResponse.data);
+        console.log(`[Download via WebShare] Buffer boyutu: ${buffer.byteLength}`);
         
         if (buffer.byteLength < 100) {
             throw new Error(`Buffer çok küçük: ${buffer.byteLength} bytes`);
@@ -714,15 +712,12 @@ async function downloadSubtitleViaCloudflareProxy(idid, altid) {
             throw new Error(`SRT içeriği boş veya çok kısa`);
         }
         
-        console.log(`[Download via CF Proxy] ✅ Cloudflare proxy başarılı - SRT boyutu: ${srtText.length} chars`);
+        console.log(`[Download via WebShare] ✅ CORS proxy başarılı - SRT boyutu: ${srtText.length} chars`);
         return srtText;
 
     } catch (err) {
-        console.error('Cloudflare proxy ile indirme hatası:', err.message);
-        if (err.response) {
-            console.error('CF Proxy response status:', err.response.status);
-        }
-        throw new Error(`Cloudflare proxy başarısız: ${err.message}`);
+        console.error('WebShare proxy ile indirme hatası:', err.message);
+        throw new Error(`WebShare proxy başarısız: ${err.message}`);
     }
 }
 
